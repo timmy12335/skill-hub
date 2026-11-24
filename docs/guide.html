@@ -140,6 +140,7 @@ footer{margin-top:64px;padding-top:24px;border-top:1px solid var(--line);font-si
     <li><a href="#adopt">導入新專案</a></li>
     <li><a href="#config">分層設定</a></li>
     <li><a href="#superpowers">必裝 plugin</a></li>
+    <li><a href="#agents">Codex 與 Cursor</a></li>
     <li><a href="#author">寫新 skill</a></li>
     <li><a href="#adopt-flow">自建 skill 送審</a></li>
     <li><a href="#tiers">升級與退場</a></li>
@@ -153,8 +154,8 @@ footer{margin-top:64px;padding-top:24px;border-top:1px solid var(--line);font-si
 <main>
 <header class="hero">
   <div class="eyebrow">skill-hub · 參考 Uber 的 agent skill 管理做法</div>
-  <h1>一個 repo 管所有專案的 Claude Code skill</h1>
-  <p class="lead">把 skill 集中放在 Skill Hub，每個專案只放一個小設定檔。新專案執行一次 <code>init</code>，之後 hub 更新時執行 <code>sync</code>，不必再為每個專案重新設計管理方式。</p>
+  <h1>一個 repo 管所有專案的 agent skill</h1>
+  <p class="lead">把 skill 集中放在 Skill Hub，同一份可以給 Claude Code、Codex、Cursor 使用，每個專案只放一個小設定檔。新專案執行一次 <code>init</code>，之後 hub 更新時執行 <code>sync</code>，不必再為每個專案重新設計管理方式。</p>
   <div class="quick">
     <div><small>需求</small><p>Python 3.9 以上，不需安裝套件。eval 需要 <code>claude</code> CLI。</p></div>
     <div><small>下載</small><p>專案檔案庫中的 <code>skill-hub-framework/skill-hub.zip</code></p></div>
@@ -183,7 +184,7 @@ footer{margin-top:64px;padding-top:24px;border-top:1px solid var(--line);font-si
 
 <section id="arch">
   <h2><span class="n">02</span>整體架構</h2>
-  <p>左邊是 hub 裡的三層 skill，右邊是專案決定要裝哪些 skill 的四層設定。<code>sync</code> 把兩者合併，複製到專案的 <code>.claude/skills/</code>，並寫一份 lock 檔記錄版本。</p>
+  <p>左邊是 hub 裡的三層 skill，右邊是專案決定要裝哪些 skill 的四層設定。<code>sync</code> 把兩者合併，依專案使用的 agent 安裝到對應資料夾（見<a href="#agents">支援 Codex 與 Cursor</a>），並寫一份 lock 檔記錄版本。</p>
   <div class="arch">
     <div>
       <h4>skill-hub/skills/</h4>
@@ -199,7 +200,7 @@ footer{margin-top:64px;padding-top:24px;border-top:1px solid var(--line);font-si
         <div class="layer"><i>2</i>使用者 <code>~/.config/skillhub/</code></div>
         <div class="layer"><i>3</i>專案 <code>.skillhub.json</code></div>
         <div class="layer"><i>4</i>本機 <code>.skillhub.local.json</code></div>
-        <div class="layer out"><i>=</i>.claude/skills/＋skills.lock.json</div>
+        <div class="layer out"><i>=</i>專案的 skill 資料夾＋.skillhub/lock.json</div>
       </div>
     </div>
   </div>
@@ -259,20 +260,20 @@ echo 'alias skillctl="python3 ~/skill-hub/tools/skillctl.py"' &gt;&gt; ~/.zshrc<
     <li><div>
       <h3>在專案裡執行 init</h3>
       <div class="pre"><pre>cd ~/projects/my-app
-skillctl init --plugins starter</pre></div>
-      <p>這一步會：建立 <code>.skillhub.json</code>；把 <code>.skillhub.local.json</code> 加進 <code>.gitignore</code>；在 <code>.claude/settings.json</code> 註冊使用量與自建 skill 偵測 hook 並啟用必裝的 superpowers plugin；安裝 always-on 和 starter 組合包裡的 skill。</p>
+skillctl init --plugins starter                          <span class="c"># 只用 Claude Code</span>
+skillctl init --plugins starter --agents claude codex cursor   <span class="c"># 三個都用</span></pre></div>
+      <p>這一步會：建立 <code>.skillhub.json</code>；把 <code>.skillhub.local.json</code> 加進 <code>.gitignore</code>；在各 agent 的設定檔註冊使用量與自建 skill 偵測 hook，並啟用必裝的 superpowers plugin；安裝 always-on 和 starter 組合包裡的 skill。</p>
       <div class="pre"><pre>✓ 建立 .skillhub.json
-✓ 已在 .claude/settings.json 註冊使用量 hook
 + 安裝 commit-message v1.1.0  (plugin:starter)
 + 安裝 find-skills v1.0.0  (always-on)
 + 安裝 skill-papercut v1.0.0  (always-on)
 + 啟用 Claude Code plugin superpowers@superpowers-marketplace（必裝）
-✓ 3 個 skill 已同步到 .claude/skills</pre></div>
+✓ 3 個 skill 已同步到 .claude/skills，agent：claude</pre></div>
       <p>接著在專案裡開 Claude Code，同意安裝 superpowers plugin。之後可以隨時用 <code>skillctl doctor</code> 檢查狀態。</p>
     </div></li>
     <li><div>
       <h3>把產生的檔案 commit 進專案</h3>
-      <p>commit <code>.skillhub.json</code>、<code>.claude/skills/</code>、<code>.claude/skills.lock.json</code>、<code>.claude/settings.json</code>、<code>.claude/hooks/</code>。這樣隊友 clone 下來不需要 hub 也能直接用 skill。</p>
+      <p>commit <code>.skillhub.json</code>、<code>.skillhub/</code>（lock 檔與 hook 腳本）、skill 資料夾（<code>.claude/skills/</code> 或 <code>.agents/skills/</code>），以及 agent 設定檔（<code>.claude/settings.json</code>、<code>.codex/hooks.json</code>、<code>.cursor/hooks.json</code>）。這樣隊友 clone 下來不需要 hub 也能直接用 skill。</p>
     </div></li>
     <li><div>
       <h3>hub 有更新時同步</h3>
@@ -335,8 +336,41 @@ cd ~/projects/my-app &amp;&amp; skillctl sync      <span class="c"># 只會更�
   <p>專案需要其他 plugin 時，在 <code>.skillhub.json</code> 的 <code>agent_plugins</code> 加上 id 即可，例如 <code>["playwright@claude-plugins-official"]</code>。</p>
 </section>
 
+<section id="agents">
+  <h2><span class="n">06</span>支援 Codex 與 Cursor</h2>
+  <p>跟 Uber 的 aifx 一樣，同一份 hub 可以裝給不同的 agent。在 <code>.skillhub.json</code> 設定 <code>"agents"</code>，<code>sync</code> 會把 skill 放到每個 agent 讀得到的位置，並在各自的設定檔註冊 hook。每個 skill 在專案裡只有一份實體檔案，其他位置用 symlink 指過去，不會出現好幾份各自走樣的副本。</p>
+  <div class="pre"><pre><span class="c">// .skillhub.json</span>
+{ <span class="k">"agents"</span>: [<span class="s">"claude"</span>, <span class="s">"codex"</span>, <span class="s">"cursor"</span>], <span class="k">"plugins"</span>: [<span class="s">"starter"</span>] }</pre></div>
+  <h3>各 agent 讀哪裡</h3>
+  <div class="tbl"><table>
+    <thead><tr><th>Agent</th><th>skill 資料夾</th><th>hook 設定檔</th><th>怎麼算一次使用</th></tr></thead>
+    <tbody>
+      <tr><td>Claude Code</td><td><code>.claude/skills/</code></td><td><code>.claude/settings.json</code></td><td>呼叫 Skill 工具，或輸入 <code>/name</code></td></tr>
+      <tr><td>Codex</td><td><code>.agents/skills/</code></td><td><code>.codex/hooks.json</code></td><td>讀取 <code>skills/&lt;name&gt;/SKILL.md</code>，或輸入 <code>$name</code></td></tr>
+      <tr><td>Cursor</td><td><code>.agents/skills/</code>、<code>.cursor/skills/</code>，也讀 <code>.claude/skills/</code></td><td><code>.cursor/hooks.json</code></td><td>工具讀取 SKILL.md，或輸入 <code>/name</code></td></tr>
+    </tbody>
+  </table></div>
+  <h3>skill 放在哪</h3>
+  <div class="tbl"><table>
+    <thead><tr><th>agents</th><th>實體檔案</th><th>symlink</th></tr></thead>
+    <tbody>
+      <tr><td><code>claude</code>、<code>claude</code>＋<code>cursor</code></td><td><code>.claude/skills/</code></td><td>無（Cursor 本來就讀得到）</td></tr>
+      <tr><td>只有 <code>codex</code> 或 <code>cursor</code></td><td><code>.agents/skills/</code></td><td>無</td></tr>
+      <tr><td>有 <code>claude</code> 也有 <code>codex</code></td><td><code>.agents/skills/</code></td><td><code>.claude/skills/&lt;name&gt;</code> 指向實體</td></tr>
+    </tbody>
+  </table></div>
+  <p>改變 agents 後再 <code>sync</code> 一次，skill 會自動搬到新位置。</p>
+  <h3>要注意的地方</h3>
+  <ul>
+    <li><b>superpowers：</b>只有 Claude Code 能用設定檔宣告 plugin。Codex 和 Cursor 需要在每台電腦手動安裝一次，<code>doctor</code> 會提醒並附上安裝說明連結。</li>
+    <li><b>Codex hook：</b>第一次在專案開 Codex 時，要用 <code>/hooks</code> 信任專案的 hook 才會執行。</li>
+    <li><b>Cursor hook：</b>同時啟用 Claude 時，Cursor 會沿用 Claude Code 的 hook，所以不另外寫 <code>.cursor/hooks.json</code>，避免同一次使用記兩筆。</li>
+    <li><b>Cursor 同時讀 .claude 和 .agents：</b>三個 agent 都啟用時，Cursor 可能在兩個位置看到同一個 skill（其中一個是 symlink）。如果清單出現重複，可在 Cursor 只保留一個來源。</li>
+  </ul>
+</section>
+
 <section id="author">
-  <h2><span class="n">06</span>寫新 skill</h2>
+  <h2><span class="n">07</span>寫新 skill</h2>
   <p>每個 skill 都走同一條生命週期：</p>
   <div class="life">
     <span>撰寫</span><em>→</em><span>測試</span><em>→</em><span>上架</span><em>→</em><span>依使用資料改進</span><em>→</em><span>模型變強後退場</span>
@@ -366,12 +400,12 @@ skillctl eval api-review</pre></div>
 </section>
 
 <section id="adopt-flow">
-  <h2><span class="n">07</span>專案自建 skill 自動送審</h2>
-  <p>在任何專案的 <code>.claude/skills/</code> 裡自己新增 skill 時，不需要手動搬到 hub。Claude Code 結束時，hook 會發現這個新 skill，自動開 PR 送進 hub 審核，通過後由 hub 接手管理。</p>
+  <h2><span class="n">08</span>專案自建 skill 自動送審</h2>
+  <p>在任何專案的 skill 資料夾（<code>.claude/skills/</code>、<code>.agents/skills/</code>、<code>.cursor/skills/</code>）自己新增 skill 時，不需要手動搬到 hub。agent session 結束時，hook 會發現這個新 skill，自動開 PR 送進 hub 審核，通過後由 hub 接手管理。</p>
   <ol class="steps">
     <li><div>
       <h3>偵測</h3>
-      <p><code>init</code> 會註冊 SessionEnd hook。它比對 <code>.claude/skills/</code> 和 lock 檔，找出 hub 還沒有的 skill，在背景執行 <code>skillctl adopt</code>，不會拖慢 Claude Code 結束。結果寫在 <code>~/.skillhub/adopt.log</code>。</p>
+      <p><code>init</code> 會註冊 SessionEnd hook。它比對各 skill 資料夾和 lock 檔，找出 hub 還沒有的 skill，在背景執行 <code>skillctl adopt</code>，不會拖慢 Claude Code 結束。結果寫在 <code>~/.skillhub/adopt.log</code>。</p>
     </div></li>
     <li><div>
       <h3>送審</h3>
@@ -401,7 +435,7 @@ skillctl eval api-review</pre></div>
 </section>
 
 <section id="tiers">
-  <h2><span class="n">08</span>升級與退場</h2>
+  <h2><span class="n">09</span>升級與退場</h2>
   <p>skill 放在哪個資料夾就是哪一級。新 skill 一律從 <span class="pill p-domain">domain</span> 開始，證明自己有用之後再往上升。升級和降級都用指令完成，指令會搬資料夾、改 <code>tier</code>、升版號、寫 CHANGELOG，你只要 commit 並開 PR。</p>
   <div class="pre"><pre>$ skillctl promote api-review --dry-run
 api-review：domain → core
@@ -443,7 +477,7 @@ skillctl demote api-review --to domain         <span class="c"># 降一層</span
 </section>
 
 <section id="eval">
-  <h2><span class="n">09</span>Eval 與 ablation</h2>
+  <h2><span class="n">10</span>Eval 與 ablation</h2>
   <p><code>skillctl eval</code> 會為每個案例建一個乾淨的暫存專案，只裝這個 skill 和 always-on 層，用 <code>claude -p</code> 執行，再檢查 skill 有沒有被觸發、輸出是否符合條件。預設只給 agent 唯讀工具，需要更多用 <code>--allow-tools</code>。</p>
   <h3>案例格式</h3>
   <div class="pre"><pre>{<span class="k">"type"</span>: <span class="s">"golden"</span>, <span class="k">"prompt"</span>: <span class="s">"我 stage 好了，幫我寫 commit message"</span>,
@@ -470,7 +504,7 @@ skillctl demote api-review --to domain         <span class="c"># 降一層</span
 </section>
 
 <section id="telemetry">
-  <h2><span class="n">10</span>使用量與回報</h2>
+  <h2><span class="n">11</span>使用量與回報</h2>
   <h3>Hook 記錄什麼</h3>
   <p><code>init</code> 註冊兩個 hook：agent 呼叫 Skill 工具時（PostToolUse），以及你手動輸入 <code>/skill-name</code> 時（UserPromptSubmit，只取指令名稱）。每筆寫一行到 <code>~/.skillhub/usage.jsonl</code>：</p>
   <div class="pre"><pre>{<span class="k">"ts"</span>: <span class="s">"2026-11-24T14:16:23+00:00"</span>, <span class="k">"skill"</span>: <span class="s">"commit-message"</span>, <span class="k">"version"</span>: <span class="s">"1.1.0"</span>,
@@ -493,11 +527,11 @@ skillctl papercut commit-message --to-eval   <span class="c"># 全部轉成 real
 </section>
 
 <section id="cli">
-  <h2><span class="n">11</span>指令速查</h2>
+  <h2><span class="n">12</span>指令速查</h2>
   <div class="tbl"><table>
     <thead><tr><th>指令</th><th>用途</th></tr></thead>
     <tbody>
-      <tr><td><code>init [--plugins …]</code></td><td>在專案啟用框架：設定檔、hook、第一次同步</td></tr>
+      <tr><td><code>init [--plugins …] [--agents …]</code></td><td>在專案啟用框架：設定檔、hook、第一次同步</td></tr>
       <tr><td><code>sync [--dry-run]</code></td><td>依四層設定安裝、更新、移除 skill，並啟用必裝 plugin</td></tr>
       <tr><td><code>adopt [name…] [--no-pr] [--again]</code></td><td>把專案內自建的 skill 送進 hub domain 層並開 PR</td></tr>
       <tr><td><code>doctor</code></td><td>檢查專案的 skill、hook、必裝 plugin 是否到位</td></tr>
@@ -517,10 +551,10 @@ skillctl papercut commit-message --to-eval   <span class="c"># 全部轉成 real
 </section>
 
 <section id="faq">
-  <h2><span class="n">12</span>常見問題</h2>
+  <h2><span class="n">13</span>常見問題</h2>
   <h3>copy 和 link 模式要選哪個？</h3>
   <p>團隊專案用 <code>copy</code>：skill 跟著專案進版控，隊友不需要 hub。自己同時開發 hub 和專案時，在 <code>.skillhub.local.json</code> 設 <code>"mode": "link"</code>，改 hub 立刻生效。</p>
-  <h3>專案裡直接改了 .claude/skills/ 的檔案會怎樣？</h3>
+  <h3>專案裡直接改了 skill 資料夾的檔案會怎樣？</h3>
   <p>由 hub 安裝的 skill，下次 <code>sync</code> 時 hub 版本有變就會被覆蓋，要改請回 hub 改並升版號。自己新增、hub 還沒有的 skill 不會被覆蓋，會自動送審（見<a href="#adopt-flow">自建 skill 送審</a>）。</p>
   <h3>沒有 GitHub、只有自己用可以嗎？</h3>
   <p>可以。hub 只是一個資料夾，CI 和 CODEOWNERS 是選用的。建議至少保留 <code>skillctl lint</code> 當 git pre-commit hook。</p>

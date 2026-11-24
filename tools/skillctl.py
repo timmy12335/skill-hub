@@ -310,7 +310,7 @@ def layered_config(project: Path) -> dict:
         ("project", project / ".skillhub.json"),
         ("local", project / ".skillhub.local.json"),
     ]
-    cfg = {"always_on": True, "plugins": [], "include": [], "exclude": [], "pin": {}, "mode": "copy", "sources": [],
+    cfg = {"always_on": True, "agents": ["claude"], "hooks": True, "plugins": [], "include": [], "exclude": [], "pin": {}, "mode": "copy", "sources": [],
            "agent_plugins": [], "exclude_agent_plugins": []}
     for name, p in layers:
         d = read_json(p)
@@ -321,7 +321,7 @@ def layered_config(project: Path) -> dict:
             for v in d.get(k, []):
                 if v not in cfg[k]:
                     cfg[k].append(v)
-        for k in ("always_on", "mode"):
+        for k in ("always_on", "mode", "agents", "hooks"):
             if k in d:
                 cfg[k] = d[k]
         cfg["pin"].update(d.get("pin", {}))
@@ -354,6 +354,8 @@ def ensure_agent_plugins(project: Path, cfg: dict, dry_run: bool = False) -> lis
     """把 Claude Code plugin 寫進專案的 .claude/settings.json（enabledPlugins + extraKnownMarketplaces）。
     專案被信任後，Claude Code 會提示安裝並啟用；不會把 plugin 的檔案複製進專案。"""
     aps = wanted_agent_plugins(cfg, warn=True)
+    if "claude" not in cfg["agents"]:
+        return aps  # 只有 Claude Code 能用 settings.json 宣告 plugin；其他 agent 由 doctor 提示手動安裝
     settings_p = project / ".claude" / "settings.json"
     st = read_json(settings_p)
     before = json.dumps(st, sort_keys=True)
@@ -411,18 +413,66 @@ def resolve_wanted(cfg: dict) -> dict:
     return out
 
 
-def install_one(s: dict, project: Path, mode: str):
-    dest = project / ".claude" / "skills" / s["name"]
-    if dest.is_symlink() or dest.is_file():
-        dest.unlink()
-    elif dest.exists():
-        shutil.rmtree(dest)
+# ---------------------------------------------------------------- 多 agent：Claude Code / Codex / Cursor
+AGENTS = ("claude", "codex", "cursor")
+# 各 agent 會讀的 skill 資料夾（依官方文件）：
+#   Claude Code：.claude/skills
+#   Codex      ：.agents/skills（從 cwd 往上找到 repo root）
+#   Cursor     ：.agents/skills、.cursor/skills，也相容 .claude/skills、.codex/skills
+SKILL_DIRS = (".agents/skills", ".claude/skills", ".cursor/skills", ".codex/skills")
+LOCK_REL = ".skillhub/lock.json"
+HOOK_REL = ".skillhub/hooks/skillhub_usage.py"
+
+
+def layout(agents) -> tuple:
+    """回傳 (實體資料夾, [symlink 資料夾])。每個 skill 只有一份實體檔案，其他 agent 用 symlink 指過去。
+    - 只有 Claude（或 Claude + Cursor）：放 .claude/skills（Cursor 本來就讀得到）
+    - 有 Codex、或沒有 Claude：放跨 agent 標準位置 .agents/skills；有 Claude 時再在 .claude/skills 建 symlink"""
+    agents = set(agents or ["claude"])
+    if "codex" in agents or "claude" not in agents:
+        return ".agents/skills", ([".claude/skills"] if "claude" in agents else [])
+    return ".claude/skills", []
+
+
+def remove_path(d: Path):
+    if d.is_symlink() or d.is_file():
+        d.unlink()
+    elif d.exists():
+        shutil.rmtree(d)
+
+
+def install_one(s: dict, project: Path, mode: str, agents=("claude",)):
+    main_dir, links = layout(agents)
+    dest = project / main_dir / s["name"]
+    remove_path(dest)
     dest.parent.mkdir(parents=True, exist_ok=True)
     if mode == "link":
         dest.symlink_to(s["path"], target_is_directory=True)
     else:
         top = str(s["path"])
         shutil.copytree(s["path"], dest, ignore=lambda d, names: [n for n in names if d == top and (n in AUTHOR_ONLY or n.endswith(".draft"))])
+    for ld in links:
+        l = project / ld / s["name"]
+        remove_path(l)
+        l.parent.mkdir(parents=True, exist_ok=True)
+        l.symlink_to(os.path.relpath(dest, l.parent), target_is_directory=True)
+
+
+def uninstall_one(name: str, project: Path):
+    for d in SKILL_DIRS:
+        p = project / d / name
+        # symlink 一律移除；實體資料夾只在 skillctl 會安裝的位置移除，不碰 .cursor/.codex 裡的自建同名 skill
+        if p.is_symlink() or (p.exists() and d in (".agents/skills", ".claude/skills")):
+            remove_path(p)
+
+
+def find_local(project: Path, name: str):
+    """回傳專案內這個名稱的實體 skill 資料夾（非 symlink）。"""
+    for d in SKILL_DIRS:
+        p = project / d / name
+        if p.is_dir() and not p.is_symlink() and (p / "SKILL.md").exists():
+            return p
+    return None
 
 
 def cmd_sync(a):
@@ -430,8 +480,14 @@ def cmd_sync(a):
     cfg = layered_config(project)
     wanted = resolve_wanted(cfg)
     skills = all_skills()
-    lock_p = project / ".claude" / "skills.lock.json"
+    lock_p = project / LOCK_REL
     lock = read_json(lock_p).get("skills", {})
+    agents = cfg["agents"]
+    main_dir, _ = layout(agents)
+    if read_json(lock_p).get("layout") not in (None, main_dir):
+        lock = {k: dict(v, hash="relayout") for k, v in lock.items()}  # agent 組合改變：全部重裝到新位置
+        for n in lock:
+            uninstall_one(n, project)
     new_lock = {}
     for n, src in sorted(wanted.items()):
         s = skills[n]
@@ -443,33 +499,35 @@ def cmd_sync(a):
             print(f"! {n} 要求固定 v{cfg['pin'][n]}，但 hub 只有 v{s['version']}，改裝 hub 版本")
         h = dir_hash(s["path"])
         prev = lock.get(n)
-        local = project / ".claude" / "skills" / n
-        if not prev and local.exists() and not local.is_symlink():
+        local = find_local(project, n)
+        if not prev and local:
             if dir_hash(local) == h:
                 print(f"= {n} 已收編進 hub，改由 hub 管理")
+                if not a.dry_run:
+                    remove_path(local)  # 移除自建的那份，避免同一個 skill 在不同資料夾各一份
             else:
                 print(f"! {n}：專案內有同名的自建 skill，內容和 hub 不同，保留專案版本（確認後刪掉它再 sync，或用 adopt 更新 hub）")
                 continue
-        if prev and prev["hash"] == h and (project / ".claude/skills" / n).exists():
+        if prev and prev["hash"] == h and (project / main_dir / n).exists():
             new_lock[n] = prev
             continue
         if not a.dry_run:
-            install_one(s, project, cfg["mode"])
+            install_one(s, project, cfg["mode"], agents)
         verb = "更新" if prev else "安裝"
         print(f"+ {verb} {n} v{s['version']}  ({src})")
         new_lock[n] = {"version": s["version"], "hash": h, "tier": s["tier"], "source": src}
     for n in lock:
         if n not in new_lock:
-            d = project / ".claude" / "skills" / n
             print(f"- 移除 {n}")
             if not a.dry_run:
-                if d.is_symlink():
-                    d.unlink()
-                elif d.exists():
-                    shutil.rmtree(d)
+                uninstall_one(n, project)
     if not a.dry_run:
         write_json(lock_p, {"hub": str(HUB_ROOT), "synced_at": dt.datetime.now(dt.timezone.utc).isoformat(timespec="seconds"),
-                            "skills": new_lock})
+                            "agents": agents, "layout": main_dir, "skills": new_lock})
+        # 舊版 lock 位置
+        old = project / ".claude" / "skills.lock.json"
+        if old.exists():
+            old.unlink()
     aps = ensure_agent_plugins(project, cfg, a.dry_run)
     if not a.dry_run:
         lock_data = read_json(lock_p)
@@ -481,7 +539,11 @@ def cmd_sync(a):
         print(f"… 審核中，暫用專案內版本：{', '.join(pend)}")
     if un:
         print(f"! 專案內有 {len(un)} 個 hub 還沒有的 skill：{', '.join(un)}。執行 skillctl adopt 送進 hub 審核")
-    print(f"✓ {len(new_lock)} 個 skill 已同步到 {project / '.claude/skills'}（設定來源：{', '.join(x.split(':')[0] for x in cfg['sources']) or '預設'}）")
+    if not a.dry_run:
+        register_hooks(project, agents, cfg)
+    _, links = layout(agents)
+    where = main_dir + (f"（{', '.join(links)} 以 symlink 指向）" if links else "")
+    print(f"✓ {len(new_lock)} 個 skill 已同步到 {where}，agent：{', '.join(agents)}（設定來源：{', '.join(x.split(':')[0] for x in cfg['sources']) or '預設'}）")
 
 
 def cmd_install(a):
@@ -504,41 +566,102 @@ def cmd_install(a):
     cmd_sync(a)
 
 
-HOOK_CMD = 'python3 "$CLAUDE_PROJECT_DIR/.claude/hooks/skillhub_usage.py"'
+# 每個 agent 的 hook 指令都指向同一支腳本，用 --agent 區分事件格式
+HOOK_CMDS = {
+    "claude": f'python3 "$CLAUDE_PROJECT_DIR/{HOOK_REL}" --agent claude',
+    "codex": f'python3 "$(git rev-parse --show-toplevel 2>/dev/null || pwd)/{HOOK_REL}" --agent codex',
+    "cursor": f'python3 {HOOK_REL} --agent cursor',  # Cursor 專案層 hook 在專案根目錄執行
+}
+LEGACY_HOOK_CMD = 'python3 "$CLAUDE_PROJECT_DIR/.claude/hooks/skillhub_usage.py"'
 
 
-def has_hook(entries) -> bool:
-    return any(h.get("command") == HOOK_CMD for e in entries or [] for h in e.get("hooks", []))
+def has_hook(entries, cmd) -> bool:
+    for e in entries or []:
+        for h in [e] + list(e.get("hooks", [])):
+            if h.get("command") == cmd:
+                return True
+    return False
+
+
+def _add_nested(hooks: dict, event: str, cmd: str, matcher=None, timeout=5):
+    """Claude Code / Codex 格式：{"matcher":…, "hooks":[{"type":"command","command":…}]}"""
+    entries = hooks.setdefault(event, [])
+    for e in entries:  # 移除舊版路徑
+        e["hooks"] = [h for h in e.get("hooks", []) if h.get("command") != LEGACY_HOOK_CMD]
+    entries[:] = [e for e in entries if e.get("hooks")]
+    if has_hook(entries, cmd):
+        return
+    e = {"hooks": [{"type": "command", "command": cmd, "timeout": timeout}]}
+    if matcher:
+        e["matcher"] = matcher
+    entries.append(e)
+
+
+def register_hooks(project: Path, agents, cfg: dict):
+    """在每個 agent 的設定檔註冊同一支使用量／自建 skill 偵測 hook。"""
+    if not cfg.get("hooks", True):
+        return
+    src = HUB_ROOT / "hooks" / "skillhub_usage.py"
+    dst = project / HOOK_REL
+    dst.parent.mkdir(parents=True, exist_ok=True)
+    if not dst.exists() or dst.read_bytes() != src.read_bytes():
+        shutil.copy2(src, dst)
+    legacy = project / ".claude" / "hooks" / "skillhub_usage.py"
+    if legacy.exists():
+        legacy.unlink()
+    done = []
+    if "claude" in agents:
+        p = project / ".claude" / "settings.json"
+        st = read_json(p)
+        hk = st.setdefault("hooks", {})
+        c = HOOK_CMDS["claude"]
+        _add_nested(hk, "PostToolUse", c, "Skill")
+        _add_nested(hk, "UserPromptSubmit", c)
+        _add_nested(hk, "SessionEnd", c)
+        write_json(p, st)
+        done.append(".claude/settings.json")
+    if "codex" in agents:
+        p = project / ".codex" / "hooks.json"
+        st = read_json(p)
+        hk = st.setdefault("hooks", {})
+        c = HOOK_CMDS["codex"]
+        _add_nested(hk, "PostToolUse", c, ".*")
+        _add_nested(hk, "UserPromptSubmit", c)
+        _add_nested(hk, "SessionEnd", c, timeout=3)  # Codex 的 SessionEnd 上限 3 秒
+        write_json(p, st)
+        done.append(".codex/hooks.json")
+    if "cursor" in agents and "claude" not in agents:
+        # Cursor 會載入 Claude Code 的 hook；兩者都啟用時不重複註冊，避免同一次使用記兩筆
+        p = project / ".cursor" / "hooks.json"
+        st = read_json(p)
+        st.setdefault("version", 1)
+        hk = st.setdefault("hooks", {})
+        c = HOOK_CMDS["cursor"]
+        for ev in ("postToolUse", "beforeSubmitPrompt", "sessionEnd"):
+            entries = hk.setdefault(ev, [])
+            if not has_hook(entries, c):
+                entries.append({"type": "command", "command": c, "timeout": 5})
+        write_json(p, st)
+        done.append(".cursor/hooks.json")
+    return done
 
 
 def cmd_init(a):
     project = Path(a.project).resolve()
     cfg_p = project / ".skillhub.json"
     if not cfg_p.exists():
-        write_json(cfg_p, {"hub": str(HUB_ROOT), "plugins": a.plugins or [], "include": [], "exclude": []})
+        write_json(cfg_p, {"hub": str(HUB_ROOT), "agents": a.agents or ["claude"], "plugins": a.plugins or [],
+                           "include": [], "exclude": []})
         print(f"✓ 建立 {cfg_p.name}")
     # .gitignore：本機覆寫檔不進版控
     gi = project / ".gitignore"
     lines = gi.read_text(encoding="utf-8").splitlines() if gi.exists() else []
     if ".skillhub.local.json" not in lines:
         gi.write_text("\n".join(lines + [".skillhub.local.json"]) + "\n", encoding="utf-8")
-    if not a.no_hook:
-        hook_dir = project / ".claude" / "hooks"
-        hook_dir.mkdir(parents=True, exist_ok=True)
-        shutil.copy2(HUB_ROOT / "hooks" / "skillhub_usage.py", hook_dir / "skillhub_usage.py")
-        settings_p = project / ".claude" / "settings.json"
-        st = read_json(settings_p)
-        hooks = st.setdefault("hooks", {})
-        for event, matcher in (("PostToolUse", "Skill"), ("UserPromptSubmit", None), ("SessionEnd", None)):
-            entries = hooks.setdefault(event, [])
-            if has_hook(entries):
-                continue
-            e = {"hooks": [{"type": "command", "command": HOOK_CMD, "timeout": 5}]}
-            if matcher:
-                e["matcher"] = matcher
-            entries.append(e)
-        write_json(settings_p, st)
-        print("✓ 已在 .claude/settings.json 註冊使用量 hook")
+    if a.no_hook:
+        pc = read_json(cfg_p)
+        pc["hooks"] = False
+        write_json(cfg_p, pc)
     a.dry_run = False
     cmd_sync(a)
 
@@ -898,12 +1021,14 @@ def cmd_demote(a):
 def unmanaged_skills(project: Path, lock: dict | None = None) -> list:
     """專案 .claude/skills/ 裡不是由 hub 安裝的 skill。"""
     if lock is None:
-        lock = read_json(project / ".claude" / "skills.lock.json").get("skills", {})
-    d = project / ".claude" / "skills"
-    if not d.is_dir():
-        return []
-    return sorted(p.name for p in d.iterdir()
-                  if p.is_dir() and not p.is_symlink() and (p / "SKILL.md").exists() and p.name not in lock)
+        lock = read_json(project / LOCK_REL).get("skills", {})
+    names = set()
+    for rel in SKILL_DIRS:
+        d = project / rel
+        if d.is_dir():
+            names |= {p.name for p in d.iterdir()
+                      if p.is_dir() and not p.is_symlink() and (p / "SKILL.md").exists() and p.name not in lock}
+    return sorted(names)
 
 
 def git_owner() -> str:
@@ -957,9 +1082,9 @@ def cmd_adopt(a):
     existing, reserved = all_skills(), reserved_names()
     owner = a.owner or git_owner()
     for n in names:
-        src = project / ".claude" / "skills" / n
-        if not (src / "SKILL.md").exists():
-            print(f"✗ {n}：找不到 {src}/SKILL.md")
+        src = find_local(project, n)
+        if not src:
+            print(f"✗ {n}：在 {', '.join(SKILL_DIRS)} 都找不到 {n}/SKILL.md")
             continue
         if not NAME_RE.match(n):
             print(f"✗ {n}：名稱只能用小寫英數與連字號，請先改資料夾名稱")
@@ -1036,13 +1161,17 @@ def cmd_doctor(a):
     project = Path(a.project).resolve()
     cfg = layered_config(project)
     st = read_json(project / ".claude" / "settings.json")
-    lock = read_json(project / ".claude" / "skills.lock.json")
+    lock = read_json(project / LOCK_REL)
+    agents = cfg["agents"]
+    main_dir, links = layout(agents)
     skills = all_skills()
     checks = [((project / ".skillhub.json").exists(), "有 .skillhub.json（已執行 skillctl init）")]
-    checks.append((bool(lock), "有 .claude/skills.lock.json"))
+    checks.append((bool(lock), f"有 {LOCK_REL}"))
     stale = [n for n, v in lock.get("skills", {}).items() if n in skills and dir_hash(skills[n]["path"]) != v["hash"]]
     checks.append((not stale, "已安裝的 skill 與 hub 一致" + (f"（過期：{', '.join(stale)}，請執行 skillctl sync）" if stale else "")))
-    missing = [n for n in resolve_wanted(cfg) if not (project / ".claude" / "skills" / n).exists()]
+    missing = [n for n in resolve_wanted(cfg) if not (project / main_dir / n).exists()]
+    for ld in links:
+        missing += [f"{ld}/{n}" for n in resolve_wanted(cfg) if not (project / ld / n).is_symlink()]
     checks.append((not missing, "設定要求的 skill 都已安裝" + (f"（缺：{', '.join(missing)}）" if missing else "")))
     adopted = cfg.get("adopted", {})
     un = [n for n in unmanaged_skills(project) if n not in adopted]
@@ -1050,16 +1179,37 @@ def cmd_doctor(a):
     pending = [f"{n} {u}" for n, u in adopted.items() if n not in skills]
     if pending:
         print("審核中：" + "；".join(pending))
-    hk = st.get("hooks", {})
-    checks.append((has_hook(hk.get("PostToolUse")) and has_hook(hk.get("UserPromptSubmit")), "使用量 hook 已註冊"))
+    if cfg.get("hooks", True):
+        checks.append(((project / HOOK_REL).exists(), f"hook 腳本存在（{HOOK_REL}）"))
+        if "claude" in agents:
+            hk = st.get("hooks", {})
+            c = HOOK_CMDS["claude"]
+            checks.append((all(has_hook(hk.get(e), c) for e in ("PostToolUse", "UserPromptSubmit", "SessionEnd")),
+                           "Claude Code hook 已註冊（.claude/settings.json）"))
+        if "codex" in agents:
+            hk = read_json(project / ".codex" / "hooks.json").get("hooks", {})
+            c = HOOK_CMDS["codex"]
+            checks.append((all(has_hook(hk.get(e), c) for e in ("PostToolUse", "UserPromptSubmit", "SessionEnd")),
+                           "Codex hook 已註冊（.codex/hooks.json，第一次需在 Codex 用 /hooks 信任）"))
+        if "cursor" in agents and "claude" not in agents:
+            hk = read_json(project / ".cursor" / "hooks.json").get("hooks", {})
+            c = HOOK_CMDS["cursor"]
+            checks.append((all(has_hook(hk.get(e), c) for e in ("postToolUse", "beforeSubmitPrompt", "sessionEnd")),
+                           "Cursor hook 已註冊（.cursor/hooks.json）"))
+    others = [x for x in agents if x != "claude"]
     for ap in wanted_agent_plugins(cfg):
-        on = st.get("enabledPlugins", {}).get(ap["id"]) is True
-        checks.append((on, f"Claude Code plugin {ap['id']} 已在 settings.json 啟用" + ("（必裝）" if ap.get("required") else "")))
+        if "claude" in agents:
+            on = st.get("enabledPlugins", {}).get(ap["id"]) is True
+            checks.append((on, f"Claude Code plugin {ap['id']} 已在 settings.json 啟用" + ("（必裝）" if ap.get("required") else "")))
+        if others and ap.get("required"):
+            home = ap.get("homepage") or (f"https://github.com/{ap['marketplace']['repo']}" if ap.get("marketplace") else "")
+            print(f"提醒：{ap['id'].split('@')[0]} 在 {', '.join(others)} 需要手動安裝一次（每台電腦一次），見 {home}")
     for ok, msg in checks:
         print(f"{'✓' if ok else '✗'} {msg}")
     bad = sum(not ok for ok, _ in checks)
-    if any(ap.get("required") for ap in wanted_agent_plugins(cfg)):
+    if "claude" in agents and any(ap.get("required") for ap in wanted_agent_plugins(cfg)):
         print("\n提醒：settings.json 只負責宣告。第一次在專案開 Claude Code 時要同意安裝 plugin，可用 /plugin 確認已安裝。")
+    print(f"agent：{', '.join(agents)}；skill 實體放在 {main_dir}" + (f"，{', '.join(links)} 為 symlink" if links else ""))
     print(f"\n{len(checks) - bad}/{len(checks)} 項通過")
     sys.exit(1 if bad else 0)
 
@@ -1093,6 +1243,7 @@ def main(argv=None):
             x.add_argument("--dry-run", action="store_true")
         if nm == "init":
             x.add_argument("--plugins", nargs="*")
+            x.add_argument("--agents", nargs="+", choices=AGENTS, help="要支援的 agent，預設 claude")
             x.add_argument("--no-hook", action="store_true")
         if nm == "install":
             x.add_argument("items", nargs="+", help="skill 名稱或 plugin:名稱")

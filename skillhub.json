@@ -8,6 +8,7 @@
     {
       "id": "superpowers@superpowers-marketplace",
       "required": true,
+      "homepage": "https://github.com/obra/superpowers",
       "marketplace": {"name": "superpowers-marketplace", "repo": "obra/superpowers-marketplace"},
       "provides": [
         "using-superpowers", "brainstorming", "writing-plans", "executing-plans",

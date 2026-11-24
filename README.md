@@ -1,6 +1,6 @@
 # Skill Hub — 通用 Agent Skill 管理框架
 
-把所有專案共用的 Claude Code skill 放在這一個 repo 管理，任何專案只要 `init` 一次，
+把所有專案共用的 agent skill 放在這一個 repo 管理，同一份可給 Claude Code、Codex、Cursor 使用，任何專案只要 `init` 一次，
 之後 `sync` 就會依設定自動安裝、更新、移除 skill。做法參考
 [Uber 的 agent skill 管理方式](https://www.uber.com/us/en/blog/optimizing-ubers-agent-skills/)，縮小成個人／小團隊可用的版本。
 只需要 Python 3.9+，沒有其他相依套件。
@@ -39,6 +39,7 @@ alias skillctl="python3 ~/skill-hub/tools/skillctl.py"
 # 2. 在任一專案啟用
 cd ~/projects/my-app
 skillctl init --plugins starter     # 建 .skillhub.json、註冊 hook、安裝 skill
+# 也用 Codex / Cursor：skillctl init --plugins starter --agents claude codex cursor
 
 # 3. 之後 hub 有更新時
 skillctl sync
@@ -58,7 +59,7 @@ skillctl sync
 
 ## 在專案裡自建的 skill 會自動送進 hub
 
-在任何專案的 `.claude/skills/` 自己新增 skill 後，不用手動搬：
+在任何專案的 skill 資料夾（`.claude/skills/`、`.agents/skills/`、`.cursor/skills/`）自己新增 skill 後，不用手動搬：
 
 1. **偵測**：`init` 會註冊 SessionEnd hook。Claude Code 結束時，hook 發現 hub 還沒有的 skill，就在背景執行 `skillctl adopt`（紀錄在 `~/.skillhub/adopt.log`）。`sync` 和 `doctor` 也會列出這些 skill，`sync` 不會覆蓋它們。
 2. **送審**：`adopt` 補齊 frontmatter（版號、owner、`tier: domain`），在暫存 worktree 從 hub 的 `origin/main` 開 `adopt/<name>` 分支，加上 spec.md 與 CHANGELOG 草稿，推上去並用 `gh` 開 PR。不會動到你目前的 hub checkout。
@@ -75,12 +76,28 @@ skillctl sync
 
 手動用法：`skillctl adopt`（全部）、`skillctl adopt sql-style`、`--no-pr`（只複製到本機 hub）、`--again`（已收編過，再送一次更新）。
 
+## 支援 Claude Code、Codex、Cursor
+
+在 `.skillhub.json` 設定 `"agents": ["claude", "codex", "cursor"]`（預設只有 `claude`），或 `skillctl init --agents claude codex cursor`。
+
+| Agent | skill 資料夾 | hook 設定檔 |
+|---|---|---|
+| Claude Code | `.claude/skills/` | `.claude/settings.json` |
+| Codex | `.agents/skills/` | `.codex/hooks.json`（第一次要用 `/hooks` 信任） |
+| Cursor | `.agents/skills/`、`.cursor/skills/`，也讀 `.claude/skills/` | `.cursor/hooks.json` |
+
+每個 skill 在專案裡只有一份實體檔案：只有 Claude（或 Claude＋Cursor）時放 `.claude/skills/`；有 Codex 或沒有 Claude 時放跨 agent 標準位置 `.agents/skills/`，有 Claude 再在 `.claude/skills/` 建 symlink。改了 agents 後 `sync` 會自動搬移。
+
+- hook 是同一支 `.skillhub/hooks/skillhub_usage.py`，以 `--agent` 區分。Codex／Cursor 沒有 Skill 工具，以「讀取 `skills/<name>/SKILL.md`」或輸入 `$name`／`/name` 計為一次使用。
+- 同時啟用 Claude 與 Cursor 時不寫 `.cursor/hooks.json`，因為 Cursor 會沿用 Claude Code 的 hook。
+- superpowers 只有 Claude Code 能自動宣告；Codex 和 Cursor 要在每台電腦手動安裝一次，`doctor` 會提醒。
+
 ## 必裝的 Claude Code plugin
 
 hub 的 `skillhub.json` 用 `agent_plugins` 宣告每個專案都要有的 Claude Code plugin。目前必裝的是
 [superpowers](https://github.com/obra/superpowers)（`superpowers@superpowers-marketplace`）。
 
-- `init` / `sync` 會把它寫進專案的 `.claude/settings.json`（`enabledPlugins` 與 `extraKnownMarketplaces`）。第一次在專案開 Claude Code 時同意安裝即可，隊友 clone 後也會被提示安裝。
+- `init` / `sync` 會把它寫進專案的 `.claude/settings.json`（僅 Claude Code）（`enabledPlugins` 與 `extraKnownMarketplaces`）。第一次在專案開 Claude Code 時同意安裝即可，隊友 clone 後也會被提示安裝。
 - plugin 的檔案不會複製進專案，由 Claude Code 自己安裝與更新。
 - `required: true` 只能在 hub 設定，專案或本機用 `exclude_agent_plugins` 也排除不掉。
 - 專案可以在 `.skillhub.json` 的 `agent_plugins` 加自己需要的其他 plugin。
