@@ -56,9 +56,21 @@ skillctl sync
 欄位：`plugins`、`include`、`exclude`（清單會累加，exclude 最後套用）；
 `always_on`、`mode`（`copy` 或 `link`）後者覆蓋前者；`pin: {"name": "1.0.0"}` 固定版本。
 
+## 必裝的 Claude Code plugin
+
+hub 的 `skillhub.json` 用 `agent_plugins` 宣告每個專案都要有的 Claude Code plugin。目前必裝的是
+[superpowers](https://github.com/obra/superpowers)（`superpowers@superpowers-marketplace`）。
+
+- `init` / `sync` 會把它寫進專案的 `.claude/settings.json`（`enabledPlugins` 與 `extraKnownMarketplaces`）。第一次在專案開 Claude Code 時同意安裝即可，隊友 clone 後也會被提示安裝。
+- plugin 的檔案不會複製進專案，由 Claude Code 自己安裝與更新。
+- `required: true` 只能在 hub 設定，專案或本機用 `exclude_agent_plugins` 也排除不掉。
+- 專案可以在 `.skillhub.json` 的 `agent_plugins` 加自己需要的其他 plugin。
+- `provides` 列出 plugin 內建的 skill 名稱，hub 裡的 skill 不能同名（lint 會擋），避免兩份指令互相衝突。
+- `skillctl doctor` 檢查專案的 skill、hook、必裝 plugin 是否都到位。
+
 ## Skill 生命週期
 
-1. **撰寫**：`skillctl new api-review --tier domain` → 填 `spec.md` → `skillctl compile api-review --run` 產生 SKILL.md 草稿
+1. **撰寫**：`skillctl new api-review --tier domain` → 填 `spec.md`（可搭配 superpowers 的 `writing-skills`） → `skillctl compile api-review --run` 產生 SKILL.md 草稿
 2. **測試**：`skillctl lint api-review`、`skillctl eval api-review`（目標 70–90%）
 3. **上架**：開 PR，CI 跑 lint；core/always-on 由 CODEOWNERS 審查；改動必須升版號
 4. **改進**：`skillctl stats` 看用量；`skillctl papercut ... --to-eval` 把回報轉成 eval

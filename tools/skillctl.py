@@ -19,6 +19,7 @@
   skillctl stats [--days 30]                  使用量統計與退場候選
   skillctl papercut <name> "問題描述"          回報小問題（之後可轉成 eval case）
   skillctl compile <name> [--run]             由 spec.md 產生 SKILL.md 草稿
+  skillctl doctor [--project DIR]              檢查專案狀態（skill、hook、必裝 plugin）
   skillctl promote <name> [--to core|always-on] [--dry-run]   檢查條件並升級
   skillctl demote <name> [--to ...] [--status deprecated|retired]
 """
@@ -186,6 +187,9 @@ def lint_skill(s: dict) -> list[str]:
         errs.append("SKILL.md 缺少 frontmatter（--- ... ---）")
     if fm.get("name") != p.name:
         errs.append(f"frontmatter name「{fm.get('name')}」必須等於資料夾名稱「{p.name}」")
+    clash = reserved_names().get(p.name)
+    if clash:
+        errs.append(f"名稱與必裝 plugin {clash} 的 skill 重複，請改名（例如加上領域前綴）")
     if not NAME_RE.match(p.name) or len(p.name) > 64:
         errs.append("名稱只能用小寫英數與連字號，且不超過 64 字元")
     desc = s["description"]
@@ -305,7 +309,8 @@ def layered_config(project: Path) -> dict:
         ("project", project / ".skillhub.json"),
         ("local", project / ".skillhub.local.json"),
     ]
-    cfg = {"always_on": True, "plugins": [], "include": [], "exclude": [], "pin": {}, "mode": "copy", "sources": []}
+    cfg = {"always_on": True, "plugins": [], "include": [], "exclude": [], "pin": {}, "mode": "copy", "sources": [],
+           "agent_plugins": [], "exclude_agent_plugins": []}
     for name, p in layers:
         d = read_json(p)
         if not d:
@@ -319,7 +324,57 @@ def layered_config(project: Path) -> dict:
             if k in d:
                 cfg[k] = d[k]
         cfg["pin"].update(d.get("pin", {}))
+        for ap in d.get("agent_plugins", []):
+            ap = {"id": ap} if isinstance(ap, str) else dict(ap)
+            ap["required"] = bool(ap.get("required")) and name == "hub"  # 只有 hub 能設必裝
+            if not any(x["id"] == ap["id"] for x in cfg["agent_plugins"]):
+                cfg["agent_plugins"].append(ap)
+        cfg["exclude_agent_plugins"] += d.get("exclude_agent_plugins", [])
     return cfg
+
+
+def wanted_agent_plugins(cfg: dict, warn: bool = False) -> list:
+    out = []
+    for ap in cfg["agent_plugins"]:
+        if ap["id"] in cfg["exclude_agent_plugins"]:
+            if ap.get("required"):
+                if warn:
+                    print(f"! {ap['id']} 是 hub 規定的必裝 plugin，不能排除")
+            else:
+                continue
+        out.append(ap)
+    return out
+
+
+def ensure_agent_plugins(project: Path, cfg: dict, dry_run: bool = False) -> list:
+    """把 Claude Code plugin 寫進專案的 .claude/settings.json（enabledPlugins + extraKnownMarketplaces）。
+    專案被信任後，Claude Code 會提示安裝並啟用；不會把 plugin 的檔案複製進專案。"""
+    aps = wanted_agent_plugins(cfg, warn=True)
+    settings_p = project / ".claude" / "settings.json"
+    st = read_json(settings_p)
+    before = json.dumps(st, sort_keys=True)
+    enabled = st.setdefault("enabledPlugins", {})
+    for ap in aps:
+        enabled[ap["id"]] = True
+        mk = ap.get("marketplace")
+        if mk:
+            st.setdefault("extraKnownMarketplaces", {})[mk["name"]] = {"source": {"source": "github", "repo": mk["repo"]}}
+    if json.dumps(st, sort_keys=True) != before:
+        for ap in aps:
+            print(f"+ 啟用 Claude Code plugin {ap['id']}" + ("（必裝）" if ap.get("required") else ""))
+        if not dry_run:
+            write_json(settings_p, st)
+    return aps
+
+
+def reserved_names() -> dict:
+    """agent plugin 已提供的 skill 名稱，hub 內不能重名，避免兩份指令互相打架。"""
+    out = {}
+    for ap in read_json(HUB_ROOT / "skillhub.json").get("agent_plugins", []):
+        if isinstance(ap, dict):
+            for n in ap.get("provides", []):
+                out[n] = ap["id"]
+    return out
 
 
 def resolve_wanted(cfg: dict) -> dict:
@@ -399,6 +454,11 @@ def cmd_sync(a):
     if not a.dry_run:
         write_json(lock_p, {"hub": str(HUB_ROOT), "synced_at": dt.datetime.now(dt.timezone.utc).isoformat(timespec="seconds"),
                             "skills": new_lock})
+    aps = ensure_agent_plugins(project, cfg, a.dry_run)
+    if not a.dry_run:
+        lock_data = read_json(lock_p)
+        lock_data["agent_plugins"] = [x["id"] for x in aps]
+        write_json(lock_p, lock_data)
     print(f"✓ {len(new_lock)} 個 skill 已同步到 {project / '.claude/skills'}（設定來源：{', '.join(x.split(':')[0] for x in cfg['sources']) or '預設'}）")
 
 
@@ -425,6 +485,10 @@ def cmd_install(a):
 HOOK_CMD = 'python3 "$CLAUDE_PROJECT_DIR/.claude/hooks/skillhub_usage.py"'
 
 
+def has_hook(entries) -> bool:
+    return any(h.get("command") == HOOK_CMD for e in entries or [] for h in e.get("hooks", []))
+
+
 def cmd_init(a):
     project = Path(a.project).resolve()
     cfg_p = project / ".skillhub.json"
@@ -445,7 +509,7 @@ def cmd_init(a):
         hooks = st.setdefault("hooks", {})
         for event, matcher in (("PostToolUse", "Skill"), ("UserPromptSubmit", None)):
             entries = hooks.setdefault(event, [])
-            if any(HOOK_CMD in json.dumps(e) for e in entries):
+            if has_hook(entries):
                 continue
             e = {"hooks": [{"type": "command", "command": HOOK_CMD, "timeout": 5}]}
             if matcher:
@@ -808,6 +872,33 @@ def cmd_demote(a):
         print("  retired 的 skill 會在各專案下次 skillctl sync 時被移除")
 
 
+# ---------------------------------------------------------------- doctor
+def cmd_doctor(a):
+    project = Path(a.project).resolve()
+    cfg = layered_config(project)
+    st = read_json(project / ".claude" / "settings.json")
+    lock = read_json(project / ".claude" / "skills.lock.json")
+    skills = all_skills()
+    checks = [((project / ".skillhub.json").exists(), "有 .skillhub.json（已執行 skillctl init）")]
+    checks.append((bool(lock), "有 .claude/skills.lock.json"))
+    stale = [n for n, v in lock.get("skills", {}).items() if n in skills and dir_hash(skills[n]["path"]) != v["hash"]]
+    checks.append((not stale, "已安裝的 skill 與 hub 一致" + (f"（過期：{', '.join(stale)}，請執行 skillctl sync）" if stale else "")))
+    missing = [n for n in resolve_wanted(cfg) if not (project / ".claude" / "skills" / n).exists()]
+    checks.append((not missing, "設定要求的 skill 都已安裝" + (f"（缺：{', '.join(missing)}）" if missing else "")))
+    hk = st.get("hooks", {})
+    checks.append((has_hook(hk.get("PostToolUse")) and has_hook(hk.get("UserPromptSubmit")), "使用量 hook 已註冊"))
+    for ap in wanted_agent_plugins(cfg):
+        on = st.get("enabledPlugins", {}).get(ap["id"]) is True
+        checks.append((on, f"Claude Code plugin {ap['id']} 已在 settings.json 啟用" + ("（必裝）" if ap.get("required") else "")))
+    for ok, msg in checks:
+        print(f"{'✓' if ok else '✗'} {msg}")
+    bad = sum(not ok for ok, _ in checks)
+    if any(ap.get("required") for ap in wanted_agent_plugins(cfg)):
+        print("\n提醒：settings.json 只負責宣告。第一次在專案開 Claude Code 時要同意安裝 plugin，可用 /plugin 確認已安裝。")
+    print(f"\n{len(checks) - bad}/{len(checks)} 項通過")
+    sys.exit(1 if bad else 0)
+
+
 # ---------------------------------------------------------------- main
 def main(argv=None):
     p = argparse.ArgumentParser(prog="skillctl", description="通用 Agent Skill 管理工具")
@@ -867,6 +958,10 @@ def main(argv=None):
     x.add_argument("name")
     x.add_argument("--run", action="store_true")
     x.set_defaults(fn=cmd_compile)
+
+    x = sub.add_parser("doctor", help="檢查專案的 skill 與必裝 plugin 狀態")
+    x.add_argument("--project", default=".")
+    x.set_defaults(fn=cmd_doctor)
 
     x = sub.add_parser("promote", help="檢查升級條件並升級 skill（domain → core → always-on）")
     x.add_argument("name")

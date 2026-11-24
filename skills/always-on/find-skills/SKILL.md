@@ -17,4 +17,5 @@ metadata:
 4. 告訴使用者你找到哪個 skill、為什麼適合，取得同意後安裝：
    `python3 $HUB/tools/skillctl.py install <name> --project .`
 5. 安裝後重新讀取 `.claude/skills/<name>/SKILL.md` 並照做。
-6. 找不到時直接完成任務，並建議使用者：這類工作若會重複，可用 `skillctl new <name>` 建立新 skill。
+6. superpowers plugin 是每個專案必裝的，它的 skill（brainstorming、writing-plans、systematic-debugging 等）已經可以直接用，不需要到 hub 找。
+7. 找不到時直接完成任務，並建議使用者：這類工作若會重複，可用 `skillctl new <name>` 建立新 skill。

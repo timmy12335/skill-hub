@@ -139,6 +139,7 @@ footer{margin-top:64px;padding-top:24px;border-top:1px solid var(--line);font-si
     <li><a href="#anatomy">一個 skill 的組成</a></li>
     <li><a href="#adopt">導入新專案</a></li>
     <li><a href="#config">分層設定</a></li>
+    <li><a href="#superpowers">必裝 plugin</a></li>
     <li><a href="#author">寫新 skill</a></li>
     <li><a href="#tiers">升級與退場</a></li>
     <li><a href="#eval">Eval 與 ablation</a></li>
@@ -258,13 +259,15 @@ echo 'alias skillctl="python3 ~/skill-hub/tools/skillctl.py"' &gt;&gt; ~/.zshrc<
       <h3>在專案裡執行 init</h3>
       <div class="pre"><pre>cd ~/projects/my-app
 skillctl init --plugins starter</pre></div>
-      <p>這一步會：建立 <code>.skillhub.json</code>；把 <code>.skillhub.local.json</code> 加進 <code>.gitignore</code>；在 <code>.claude/settings.json</code> 註冊使用量 hook；安裝 always-on 和 starter 組合包裡的 skill。</p>
+      <p>這一步會：建立 <code>.skillhub.json</code>；把 <code>.skillhub.local.json</code> 加進 <code>.gitignore</code>；在 <code>.claude/settings.json</code> 註冊使用量 hook 並啟用必裝的 superpowers plugin；安裝 always-on 和 starter 組合包裡的 skill。</p>
       <div class="pre"><pre>✓ 建立 .skillhub.json
 ✓ 已在 .claude/settings.json 註冊使用量 hook
 + 安裝 commit-message v1.1.0  (plugin:starter)
 + 安裝 find-skills v1.0.0  (always-on)
 + 安裝 skill-papercut v1.0.0  (always-on)
++ 啟用 Claude Code plugin superpowers@superpowers-marketplace（必裝）
 ✓ 3 個 skill 已同步到 .claude/skills</pre></div>
+      <p>接著在專案裡開 Claude Code，同意安裝 superpowers plugin。之後可以隨時用 <code>skillctl doctor</code> 檢查狀態。</p>
     </div></li>
     <li><div>
       <h3>把產生的檔案 commit 進專案</h3>
@@ -311,6 +314,24 @@ cd ~/projects/my-app &amp;&amp; skillctl sync      <span class="c"># 只會更�
 
 <span class="c">// my-app/.skillhub.local.json：只在我這台電腦關掉 papercut</span>
 { <span class="k">"exclude"</span>: [<span class="s">"skill-papercut"</span>] }</pre></div>
+  <h3 id="superpowers">必裝的 Claude Code plugin</h3>
+  <p>hub 的 <code>skillhub.json</code> 用 <code>agent_plugins</code> 宣告每個專案都要有的 plugin，目前必裝的是 <a href="https://github.com/obra/superpowers" target="_blank" rel="noopener">superpowers</a>。<code>sync</code> 會把它寫進專案的 <code>.claude/settings.json</code>，第一次在專案開 Claude Code 時同意安裝即可；隊友 clone 後也會被提示安裝。plugin 本身由 Claude Code 安裝與更新，不會複製進專案。</p>
+  <div class="pre"><pre><span class="c">// skill-hub/skillhub.json（節錄）</span>
+<span class="k">"agent_plugins"</span>: [{
+  <span class="k">"id"</span>: <span class="s">"superpowers@superpowers-marketplace"</span>,
+  <span class="k">"required"</span>: true,
+  <span class="k">"marketplace"</span>: {<span class="k">"name"</span>: <span class="s">"superpowers-marketplace"</span>, <span class="k">"repo"</span>: <span class="s">"obra/superpowers-marketplace"</span>},
+  <span class="k">"provides"</span>: [<span class="s">"brainstorming"</span>, <span class="s">"writing-plans"</span>, <span class="s">"systematic-debugging"</span>, <span class="s">"…"</span>]
+}]</pre></div>
+  <div class="tbl"><table>
+    <thead><tr><th>欄位</th><th>說明</th></tr></thead>
+    <tbody>
+      <tr><td><code>required</code></td><td>只有 hub 能設。專案或本機用 <code>exclude_agent_plugins</code> 也排除不掉</td></tr>
+      <tr><td><code>marketplace</code></td><td>寫進 <code>extraKnownMarketplaces</code>，讓 Claude Code 知道去哪裡裝</td></tr>
+      <tr><td><code>provides</code></td><td>plugin 內建的 skill 名稱。hub 裡的 skill 不能同名，lint 會擋，避免兩份指令互相衝突</td></tr>
+    </tbody>
+  </table></div>
+  <p>專案需要其他 plugin 時，在 <code>.skillhub.json</code> 的 <code>agent_plugins</code> 加上 id 即可，例如 <code>["playwright@claude-plugins-official"]</code>。</p>
 </section>
 
 <section id="author">
@@ -327,7 +348,7 @@ cd ~/projects/my-app &amp;&amp; skillctl sync      <span class="c"># 只會更�
     </div></li>
     <li><div>
       <h3>填 spec.md，再產生 SKILL.md</h3>
-      <p>spec 寫目標、使用者會怎麼說、不該觸發的情境、產出、必用與禁用工具、成功標準。然後：</p>
+      <p>spec 寫目標、使用者會怎麼說、不該觸發的情境、產出、必用與禁用工具、成功標準。superpowers 的 <code>brainstorming</code> 適合用來釐清 spec，<code>writing-skills</code> 適合用來寫 SKILL.md。然後：</p>
       <div class="pre"><pre>skillctl compile api-review --run   <span class="c"># 產生 SKILL.md.draft，比對後再覆蓋</span></pre></div>
     </div></li>
     <li><div>
@@ -441,7 +462,8 @@ skillctl papercut commit-message --to-eval   <span class="c"># 全部轉成 real
     <thead><tr><th>指令</th><th>用途</th></tr></thead>
     <tbody>
       <tr><td><code>init [--plugins …]</code></td><td>在專案啟用框架：設定檔、hook、第一次同步</td></tr>
-      <tr><td><code>sync [--dry-run]</code></td><td>依四層設定安裝、更新、移除 skill</td></tr>
+      <tr><td><code>sync [--dry-run]</code></td><td>依四層設定安裝、更新、移除 skill，並啟用必裝 plugin</td></tr>
+      <tr><td><code>doctor</code></td><td>檢查專案的 skill、hook、必裝 plugin 是否到位</td></tr>
       <tr><td><code>install &lt;name|plugin:x&gt;</code></td><td>寫進 <code>.skillhub.json</code> 並同步</td></tr>
       <tr><td><code>find &lt;關鍵字&gt; [--json]</code></td><td>搜尋，依符合度、eval 分數、30 天用量排序</td></tr>
       <tr><td><code>list</code></td><td>列出全部 skill</td></tr>
@@ -467,6 +489,8 @@ skillctl papercut commit-message --to-eval   <span class="c"># 全部轉成 real
   <p>可以。hub 只是一個資料夾，CI 和 CODEOWNERS 是選用的。建議至少保留 <code>skillctl lint</code> 當 git pre-commit hook。</p>
   <h3>eval 要花多少？</h3>
   <p>每個案例是一次 <code>claude -p</code> 呼叫，最多 8 回合；加 <code>--ablation</code> 會變兩倍。平常只對有改動的 skill 跑，<code>--dry-run</code> 只檢查格式、不呼叫模型。</p>
+  <h3>為什麼 superpowers 不直接複製進 hub？</h3>
+  <p>它是獨立維護、更新頻繁的 plugin。交給 Claude Code 的 plugin 機制安裝，就能跟著上游更新；hub 只負責規定「一定要裝」，並確保自己的 skill 不和它撞名。</p>
   <h3>手動輸入 /skill-name 會被記錄嗎？</h3>
   <p>會，hook 只取開頭的指令名稱，而且必須是專案裡已安裝的 skill 才記錄，後面的文字不會寫入。</p>
 </section>
