@@ -141,6 +141,7 @@ footer{margin-top:64px;padding-top:24px;border-top:1px solid var(--line);font-si
     <li><a href="#config">分層設定</a></li>
     <li><a href="#superpowers">必裝 plugin</a></li>
     <li><a href="#author">寫新 skill</a></li>
+    <li><a href="#adopt-flow">自建 skill 送審</a></li>
     <li><a href="#tiers">升級與退場</a></li>
     <li><a href="#eval">Eval 與 ablation</a></li>
     <li><a href="#telemetry">使用量與回報</a></li>
@@ -259,7 +260,7 @@ echo 'alias skillctl="python3 ~/skill-hub/tools/skillctl.py"' &gt;&gt; ~/.zshrc<
       <h3>在專案裡執行 init</h3>
       <div class="pre"><pre>cd ~/projects/my-app
 skillctl init --plugins starter</pre></div>
-      <p>這一步會：建立 <code>.skillhub.json</code>；把 <code>.skillhub.local.json</code> 加進 <code>.gitignore</code>；在 <code>.claude/settings.json</code> 註冊使用量 hook 並啟用必裝的 superpowers plugin；安裝 always-on 和 starter 組合包裡的 skill。</p>
+      <p>這一步會：建立 <code>.skillhub.json</code>；把 <code>.skillhub.local.json</code> 加進 <code>.gitignore</code>；在 <code>.claude/settings.json</code> 註冊使用量與自建 skill 偵測 hook 並啟用必裝的 superpowers plugin；安裝 always-on 和 starter 組合包裡的 skill。</p>
       <div class="pre"><pre>✓ 建立 .skillhub.json
 ✓ 已在 .claude/settings.json 註冊使用量 hook
 + 安裝 commit-message v1.1.0  (plugin:starter)
@@ -364,8 +365,43 @@ skillctl eval api-review</pre></div>
   </ol>
 </section>
 
+<section id="adopt-flow">
+  <h2><span class="n">07</span>專案自建 skill 自動送審</h2>
+  <p>在任何專案的 <code>.claude/skills/</code> 裡自己新增 skill 時，不需要手動搬到 hub。Claude Code 結束時，hook 會發現這個新 skill，自動開 PR 送進 hub 審核，通過後由 hub 接手管理。</p>
+  <ol class="steps">
+    <li><div>
+      <h3>偵測</h3>
+      <p><code>init</code> 會註冊 SessionEnd hook。它比對 <code>.claude/skills/</code> 和 lock 檔，找出 hub 還沒有的 skill，在背景執行 <code>skillctl adopt</code>，不會拖慢 Claude Code 結束。結果寫在 <code>~/.skillhub/adopt.log</code>。</p>
+    </div></li>
+    <li><div>
+      <h3>送審</h3>
+      <p>adopt 會補齊 frontmatter（版號 0.1.0、owner、<code>tier: domain</code>），在暫存 worktree 從 hub 的 <code>origin/main</code> 開 <code>adopt/&lt;name&gt;</code> 分支，加上 spec.md 和 CHANGELOG 草稿後推上去開 PR。你目前的 hub checkout 不受影響。</p>
+      <div class="pre"><pre>[2026-11-24T15:19:00] my-app: 發現新 skill sql-style（pr）
+✓ sql-style 已送審：https://github.com/timmy12335/skill-hub/pull/9</pre></div>
+    </div></li>
+    <li><div>
+      <h3>審核</h3>
+      <p>hub 的 CI 跑 lint。PR 只動到 <code>skills/domain/</code> 時，lint 通過就自動合併；只要碰到 core、always-on 或工具程式，就一定要人審。PR 描述會列出待補的 spec 和 eval。</p>
+    </div></li>
+    <li><div>
+      <h3>接手</h3>
+      <p>審核期間專案繼續用自己的版本，<code>sync</code> 不會覆蓋。合併後在 hub <code>git pull</code>，專案再 <code>skillctl sync</code>，就會顯示「已收編進 hub，改由 hub 管理」。之後其他專案也能用 <code>skillctl install sql-style</code> 安裝。</p>
+    </div></li>
+  </ol>
+  <div class="tbl"><table>
+    <thead><tr><th><code>auto_adopt</code></th><th>行為</th></tr></thead>
+    <tbody>
+      <tr><td><code>"pr"</code>（預設）</td><td>自動開 PR 送審</td></tr>
+      <tr><td><code>"notify"</code></td><td>只記錄在 adopt.log，等你手動執行 <code>skillctl adopt</code></td></tr>
+      <tr><td><code>"off"</code></td><td>不偵測</td></tr>
+    </tbody>
+  </table></div>
+  <div class="note"><b>需要：</b>本機裝好 <a href="https://cli.github.com/" target="_blank" rel="noopener">GitHub CLI</a> 並執行過 <code>gh auth login</code>。自動合併靠 hub repo 的 GitHub Actions，不需要開啟 repo 的 auto-merge 設定。</div>
+  <p>名稱和 hub 既有 skill 或 superpowers 的 skill 重複時，adopt 會拒絕並提示改名。已收編過的 skill 若在專案內又改了，用 <code>skillctl adopt &lt;name&gt; --again</code> 送更新。</p>
+</section>
+
 <section id="tiers">
-  <h2><span class="n">07</span>升級與退場</h2>
+  <h2><span class="n">08</span>升級與退場</h2>
   <p>skill 放在哪個資料夾就是哪一級。新 skill 一律從 <span class="pill p-domain">domain</span> 開始，證明自己有用之後再往上升。升級和降級都用指令完成，指令會搬資料夾、改 <code>tier</code>、升版號、寫 CHANGELOG，你只要 commit 並開 PR。</p>
   <div class="pre"><pre>$ skillctl promote api-review --dry-run
 api-review：domain → core
@@ -407,7 +443,7 @@ skillctl demote api-review --to domain         <span class="c"># 降一層</span
 </section>
 
 <section id="eval">
-  <h2><span class="n">08</span>Eval 與 ablation</h2>
+  <h2><span class="n">09</span>Eval 與 ablation</h2>
   <p><code>skillctl eval</code> 會為每個案例建一個乾淨的暫存專案，只裝這個 skill 和 always-on 層，用 <code>claude -p</code> 執行，再檢查 skill 有沒有被觸發、輸出是否符合條件。預設只給 agent 唯讀工具，需要更多用 <code>--allow-tools</code>。</p>
   <h3>案例格式</h3>
   <div class="pre"><pre>{<span class="k">"type"</span>: <span class="s">"golden"</span>, <span class="k">"prompt"</span>: <span class="s">"我 stage 好了，幫我寫 commit message"</span>,
@@ -434,7 +470,7 @@ skillctl demote api-review --to domain         <span class="c"># 降一層</span
 </section>
 
 <section id="telemetry">
-  <h2><span class="n">09</span>使用量與回報</h2>
+  <h2><span class="n">10</span>使用量與回報</h2>
   <h3>Hook 記錄什麼</h3>
   <p><code>init</code> 註冊兩個 hook：agent 呼叫 Skill 工具時（PostToolUse），以及你手動輸入 <code>/skill-name</code> 時（UserPromptSubmit，只取指令名稱）。每筆寫一行到 <code>~/.skillhub/usage.jsonl</code>：</p>
   <div class="pre"><pre>{<span class="k">"ts"</span>: <span class="s">"2026-11-24T14:16:23+00:00"</span>, <span class="k">"skill"</span>: <span class="s">"commit-message"</span>, <span class="k">"version"</span>: <span class="s">"1.1.0"</span>,
@@ -457,12 +493,13 @@ skillctl papercut commit-message --to-eval   <span class="c"># 全部轉成 real
 </section>
 
 <section id="cli">
-  <h2><span class="n">10</span>指令速查</h2>
+  <h2><span class="n">11</span>指令速查</h2>
   <div class="tbl"><table>
     <thead><tr><th>指令</th><th>用途</th></tr></thead>
     <tbody>
       <tr><td><code>init [--plugins …]</code></td><td>在專案啟用框架：設定檔、hook、第一次同步</td></tr>
       <tr><td><code>sync [--dry-run]</code></td><td>依四層設定安裝、更新、移除 skill，並啟用必裝 plugin</td></tr>
+      <tr><td><code>adopt [name…] [--no-pr] [--again]</code></td><td>把專案內自建的 skill 送進 hub domain 層並開 PR</td></tr>
       <tr><td><code>doctor</code></td><td>檢查專案的 skill、hook、必裝 plugin 是否到位</td></tr>
       <tr><td><code>install &lt;name|plugin:x&gt;</code></td><td>寫進 <code>.skillhub.json</code> 並同步</td></tr>
       <tr><td><code>find &lt;關鍵字&gt; [--json]</code></td><td>搜尋，依符合度、eval 分數、30 天用量排序</td></tr>
@@ -480,11 +517,11 @@ skillctl papercut commit-message --to-eval   <span class="c"># 全部轉成 real
 </section>
 
 <section id="faq">
-  <h2><span class="n">11</span>常見問題</h2>
+  <h2><span class="n">12</span>常見問題</h2>
   <h3>copy 和 link 模式要選哪個？</h3>
   <p>團隊專案用 <code>copy</code>：skill 跟著專案進版控，隊友不需要 hub。自己同時開發 hub 和專案時，在 <code>.skillhub.local.json</code> 設 <code>"mode": "link"</code>，改 hub 立刻生效。</p>
   <h3>專案裡直接改了 .claude/skills/ 的檔案會怎樣？</h3>
-  <p>下次 <code>sync</code> 時 hub 版本有變就會被覆蓋。要改請回 hub 改並升版號；只想這個專案不同，就 <code>exclude</code> 掉，在專案另外放一個不同名稱的 skill。</p>
+  <p>由 hub 安裝的 skill，下次 <code>sync</code> 時 hub 版本有變就會被覆蓋，要改請回 hub 改並升版號。自己新增、hub 還沒有的 skill 不會被覆蓋，會自動送審（見<a href="#adopt-flow">自建 skill 送審</a>）。</p>
   <h3>沒有 GitHub、只有自己用可以嗎？</h3>
   <p>可以。hub 只是一個資料夾，CI 和 CODEOWNERS 是選用的。建議至少保留 <code>skillctl lint</code> 當 git pre-commit hook。</p>
   <h3>eval 要花多少？</h3>

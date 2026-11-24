@@ -54,3 +54,34 @@ jobs:
           for s in $(git diff --name-only "origin/${{ github.base_ref }}" -- skills/core skills/always-on | cut -d/ -f3 | sort -u); do
             python3 tools/skillctl.py eval "$s"
           done
+
+  # skillctl adopt 開的 adopt/<name> PR：只動到 skills/domain/ 且 lint 通過就自動合併
+  # （core / always-on / tools 的改動不會走這條，一定要人審）
+  auto-merge-adopted:
+    if: >-
+      github.event_name == 'pull_request' &&
+      startsWith(github.head_ref, 'adopt/') &&
+      github.event.pull_request.head.repo.full_name == github.repository
+    needs: lint
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      pull-requests: write
+    steps:
+      - uses: actions/checkout@v4
+        with: { fetch-depth: 0 }
+      - name: Check the PR only touches skills/domain/
+        id: scope
+        run: |
+          other=$(git diff --name-only "${{ github.event.pull_request.base.sha }}" "${{ github.event.pull_request.head.sha }}" | grep -v '^skills/domain/' || true)
+          if [ -n "$other" ]; then
+            echo "改動超出 skills/domain/，需要人工審查："; echo "$other"
+            echo "ok=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "ok=true" >> "$GITHUB_OUTPUT"
+          fi
+      - name: Merge
+        if: steps.scope.outputs.ok == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh pr merge "${{ github.event.pull_request.number }}" --squash --delete-branch --repo "${{ github.repository }}"

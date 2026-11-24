@@ -19,6 +19,7 @@
   skillctl stats [--days 30]                  使用量統計與退場候選
   skillctl papercut <name> "問題描述"          回報小問題（之後可轉成 eval case）
   skillctl compile <name> [--run]             由 spec.md 產生 SKILL.md 草稿
+  skillctl adopt [name ...]                   把專案內自建的 skill 送進 hub domain 層並開 PR
   skillctl doctor [--project DIR]              檢查專案狀態（skill、hook、必裝 plugin）
   skillctl promote <name> [--to core|always-on] [--dry-run]   檢查條件並升級
   skillctl demote <name> [--to ...] [--status deprecated|retired]
@@ -330,6 +331,9 @@ def layered_config(project: Path) -> dict:
             if not any(x["id"] == ap["id"] for x in cfg["agent_plugins"]):
                 cfg["agent_plugins"].append(ap)
         cfg["exclude_agent_plugins"] += d.get("exclude_agent_plugins", [])
+        cfg.setdefault("adopted", {}).update(d.get("adopted", {}))
+        if "auto_adopt" in d:
+            cfg["auto_adopt"] = d["auto_adopt"]
     return cfg
 
 
@@ -394,12 +398,17 @@ def resolve_wanted(cfg: dict) -> dict:
         wanted.setdefault(n, "include")
     for n in cfg["exclude"]:
         wanted.pop(n, None)
-    for n in wanted:
+    out = {}
+    for n, src in wanted.items():
         if n not in skills:
+            if n in cfg.get("adopted", {}):
+                continue  # 收編 PR 還在審核，先用專案內的版本
             die(f"設定要求的 skill 不存在：{n}")
         if skills[n]["status"] == "retired":
             print(f"! {n} 已退場，略過")
-    return {n: src for n, src in wanted.items() if skills[n]["status"] != "retired"}
+            continue
+        out[n] = src
+    return out
 
 
 def install_one(s: dict, project: Path, mode: str):
@@ -434,6 +443,13 @@ def cmd_sync(a):
             print(f"! {n} 要求固定 v{cfg['pin'][n]}，但 hub 只有 v{s['version']}，改裝 hub 版本")
         h = dir_hash(s["path"])
         prev = lock.get(n)
+        local = project / ".claude" / "skills" / n
+        if not prev and local.exists() and not local.is_symlink():
+            if dir_hash(local) == h:
+                print(f"= {n} 已收編進 hub，改由 hub 管理")
+            else:
+                print(f"! {n}：專案內有同名的自建 skill，內容和 hub 不同，保留專案版本（確認後刪掉它再 sync，或用 adopt 更新 hub）")
+                continue
         if prev and prev["hash"] == h and (project / ".claude/skills" / n).exists():
             new_lock[n] = prev
             continue
@@ -459,6 +475,12 @@ def cmd_sync(a):
         lock_data = read_json(lock_p)
         lock_data["agent_plugins"] = [x["id"] for x in aps]
         write_json(lock_p, lock_data)
+    un = [x for x in unmanaged_skills(project, new_lock) if x not in cfg.get("adopted", {})]
+    pend = [x for x in unmanaged_skills(project, new_lock) if x in cfg.get("adopted", {})]
+    if pend:
+        print(f"… 審核中，暫用專案內版本：{', '.join(pend)}")
+    if un:
+        print(f"! 專案內有 {len(un)} 個 hub 還沒有的 skill：{', '.join(un)}。執行 skillctl adopt 送進 hub 審核")
     print(f"✓ {len(new_lock)} 個 skill 已同步到 {project / '.claude/skills'}（設定來源：{', '.join(x.split(':')[0] for x in cfg['sources']) or '預設'}）")
 
 
@@ -507,7 +529,7 @@ def cmd_init(a):
         settings_p = project / ".claude" / "settings.json"
         st = read_json(settings_p)
         hooks = st.setdefault("hooks", {})
-        for event, matcher in (("PostToolUse", "Skill"), ("UserPromptSubmit", None)):
+        for event, matcher in (("PostToolUse", "Skill"), ("UserPromptSubmit", None), ("SessionEnd", None)):
             entries = hooks.setdefault(event, [])
             if has_hook(entries):
                 continue
@@ -872,6 +894,143 @@ def cmd_demote(a):
         print("  retired 的 skill 會在各專案下次 skillctl sync 時被移除")
 
 
+# ---------------------------------------------------------------- adopt：把專案內自建的 skill 收進 hub
+def unmanaged_skills(project: Path, lock: dict | None = None) -> list:
+    """專案 .claude/skills/ 裡不是由 hub 安裝的 skill。"""
+    if lock is None:
+        lock = read_json(project / ".claude" / "skills.lock.json").get("skills", {})
+    d = project / ".claude" / "skills"
+    if not d.is_dir():
+        return []
+    return sorted(p.name for p in d.iterdir()
+                  if p.is_dir() and not p.is_symlink() and (p / "SKILL.md").exists() and p.name not in lock)
+
+
+def git_owner() -> str:
+    r = subprocess.run(["git", "config", "user.name"], capture_output=True, text=True)
+    return (r.stdout.strip() or os.environ.get("USER", "me")).replace(" ", "-").lower()
+
+
+def normalize_skill_md(path: Path, name: str, owner: str):
+    """補齊 frontmatter：name 與資料夾一致，metadata 帶 version/owner/tier/status。"""
+    md = path / "SKILL.md"
+    text = md.read_text(encoding="utf-8")
+    fm, body = parse_frontmatter(text)
+    if fm is None:
+        first = next((l.strip("# ").strip() for l in body.splitlines() if l.strip()), name)
+        text = f"---\nname: {name}\ndescription: {first}\n---\n\n{body}"
+        fm, _ = parse_frontmatter(text)
+    end = text.find("\n---", 3)
+    head, rest = text[:end], text[end:]
+    if fm.get("name") != name:
+        head = re.sub(r"^name:.*$", f"name: {name}", head, count=1, flags=re.M) if "name" in fm else head + f"\nname: {name}"
+    meta = fm.get("metadata") if isinstance(fm.get("metadata"), dict) else None
+    want = {"version": "0.1.0", "owner": owner, "tier": "domain", "status": "active"}
+    if meta is None:
+        head += "\nmetadata:" + "".join(f"\n  {k}: {v}" for k, v in want.items())
+    else:
+        for k, v in want.items():
+            if k == "tier":
+                head = re.sub(r"^(\s+)tier:.*$", r"\1tier: domain", head, count=1, flags=re.M)
+            if k not in meta:
+                head = re.sub(r"^metadata:\s*$", f"metadata:\n  {k}: {v}", head, count=1, flags=re.M)
+    md.write_text(head + rest, encoding="utf-8")
+
+
+def run(cmd, cwd, check=True):
+    r = subprocess.run(cmd, cwd=cwd, capture_output=True, text=True)
+    if check and r.returncode != 0:
+        raise RuntimeError(f"{' '.join(cmd)} 失敗：{(r.stderr or r.stdout).strip()[-300:]}")
+    return r.stdout.strip()
+
+
+def cmd_adopt(a):
+    project = Path(a.project).resolve()
+    cfg_p = project / ".skillhub.json"
+    pcfg = read_json(cfg_p)
+    adopted = pcfg.setdefault("adopted", {})
+    names = a.names or unmanaged_skills(project)
+    names = [n for n in names if n not in adopted or a.again]
+    if not names:
+        print("沒有需要收編的 skill")
+        return
+    existing, reserved = all_skills(), reserved_names()
+    owner = a.owner or git_owner()
+    for n in names:
+        src = project / ".claude" / "skills" / n
+        if not (src / "SKILL.md").exists():
+            print(f"✗ {n}：找不到 {src}/SKILL.md")
+            continue
+        if not NAME_RE.match(n):
+            print(f"✗ {n}：名稱只能用小寫英數與連字號，請先改資料夾名稱")
+            continue
+        if n in reserved:
+            print(f"✗ {n}：和必裝 plugin {reserved[n]} 的 skill 同名，請先改名")
+            continue
+        if n in existing and not a.again:
+            print(f"✗ {n}：hub 已有同名 skill（{existing[n]['tier']}），請改名或用 --again 送更新")
+            continue
+        normalize_skill_md(src, n, owner)  # 專案內版本也補齊，合併後 sync 才認得是同一份
+        if a.no_pr:
+            dest = HUB_ROOT / "skills" / "domain" / n
+            _stage_into(src, dest, n, project)
+            print(f"✓ {n} 已複製到 {dest.relative_to(HUB_ROOT)}（未開 PR）")
+            url = "local"
+        else:
+            try:
+                url = _adopt_pr(src, n, project)
+            except RuntimeError as e:
+                print(f"✗ {n}：{e}")
+                continue
+            print(f"✓ {n} 已送審：{url}")
+        adopted[n] = url
+        if n not in pcfg.setdefault("include", []):
+            pcfg["include"].append(n)
+    write_json(cfg_p, pcfg)
+
+
+def _stage_into(src: Path, dest: Path, name: str, project: Path):
+    if dest.exists():
+        shutil.rmtree(dest)
+    shutil.copytree(src, dest)
+    s = load_skill(dest)
+    if not (dest / "spec.md").exists():
+        spec = (HUB_ROOT / "templates" / "skill" / "spec.md").read_text(encoding="utf-8")
+        spec = spec.replace("{{name}}", name).replace("{{owner}}", s["owner"]).replace("{{tier}}", "domain")
+        spec = spec.replace("{{date}}", dt.date.today().isoformat())
+        spec = spec.replace("這個 skill 要解決什麼問題？沒有它時 agent 會怎麼做錯？",
+                            f"（由專案 {project.name} 收編，請補完）\n\n{s['description']}")
+        (dest / "spec.md").write_text(spec, encoding="utf-8")
+    if not (dest / "CHANGELOG.md").exists():
+        (dest / "CHANGELOG.md").write_text(f"# Changelog\n\n## {s['version']} — {dt.date.today().isoformat()}\n"
+                                           f"- 從專案 {project.name} 收編\n", encoding="utf-8")
+
+
+def _adopt_pr(src: Path, name: str, project: Path) -> str:
+    """在暫存 worktree 從 origin 預設分支開 adopt/<name> 分支、推上去並開 PR，不動你目前的 hub checkout。"""
+    if not shutil.which("gh"):
+        raise RuntimeError("需要 GitHub CLI（gh）並先 gh auth login；或改用 --no-pr")
+    run(["git", "fetch", "-q", "origin"], HUB_ROOT)
+    base = run(["git", "symbolic-ref", "--short", "refs/remotes/origin/HEAD"], HUB_ROOT, check=False) or "origin/main"
+    branch = f"adopt/{name}"
+    wt = Path(tempfile.mkdtemp(prefix="skillhub-adopt-"))
+    try:
+        run(["git", "worktree", "add", "-q", "-B", branch, str(wt), base], HUB_ROOT)
+        _stage_into(src, wt / "skills" / "domain" / name, name, project)
+        run(["git", "add", "-A", "skills/domain/" + name], wt)
+        run(["git", "commit", "-q", "-m", f"Adopt {name} from {project.name} into domain tier"], wt)
+        run(["git", "push", "-q", "-f", "-u", "origin", branch], wt)
+        body = (f"從專案 `{project.name}` 收編的 skill，放在 `skills/domain/{name}`。\n\n"
+                "- [ ] 補完 spec.md\n- [ ] 補 evals/cases.jsonl（至少 golden 1、real 3）\n\n"
+                "由 `skillctl adopt` 建立。domain 層只改動 `skills/domain/` 時，CI 通過後會自動合併。")
+        existing = run(["gh", "pr", "list", "--head", branch, "--json", "url", "-q", ".[0].url"], wt, check=False)
+        url = existing or run(["gh", "pr", "create", "--base", base.split("/", 1)[1], "--head", branch,
+                               "--title", f"Adopt skill: {name}", "--body", body], wt)
+        return url
+    finally:
+        run(["git", "worktree", "remove", "--force", str(wt)], HUB_ROOT, check=False)
+
+
 # ---------------------------------------------------------------- doctor
 def cmd_doctor(a):
     project = Path(a.project).resolve()
@@ -885,6 +1044,12 @@ def cmd_doctor(a):
     checks.append((not stale, "已安裝的 skill 與 hub 一致" + (f"（過期：{', '.join(stale)}，請執行 skillctl sync）" if stale else "")))
     missing = [n for n in resolve_wanted(cfg) if not (project / ".claude" / "skills" / n).exists()]
     checks.append((not missing, "設定要求的 skill 都已安裝" + (f"（缺：{', '.join(missing)}）" if missing else "")))
+    adopted = cfg.get("adopted", {})
+    un = [n for n in unmanaged_skills(project) if n not in adopted]
+    checks.append((not un, "專案內沒有未送進 hub 的自建 skill" + (f"（{', '.join(un)}，執行 skillctl adopt）" if un else "")))
+    pending = [f"{n} {u}" for n, u in adopted.items() if n not in skills]
+    if pending:
+        print("審核中：" + "；".join(pending))
     hk = st.get("hooks", {})
     checks.append((has_hook(hk.get("PostToolUse")) and has_hook(hk.get("UserPromptSubmit")), "使用量 hook 已註冊"))
     for ap in wanted_agent_plugins(cfg):
@@ -958,6 +1123,14 @@ def main(argv=None):
     x.add_argument("name")
     x.add_argument("--run", action="store_true")
     x.set_defaults(fn=cmd_compile)
+
+    x = sub.add_parser("adopt", help="把專案內自建的 skill 送進 hub 的 domain 層（開 PR）")
+    x.add_argument("names", nargs="*", help="不填 = 所有尚未收編的自建 skill")
+    x.add_argument("--project", default=".")
+    x.add_argument("--owner")
+    x.add_argument("--no-pr", action="store_true", help="只複製到本機 hub，不開分支與 PR")
+    x.add_argument("--again", action="store_true", help="已收編過也再送一次（更新 hub 版本）")
+    x.set_defaults(fn=cmd_adopt)
 
     x = sub.add_parser("doctor", help="檢查專案的 skill 與必裝 plugin 狀態")
     x.add_argument("--project", default=".")

@@ -56,6 +56,25 @@ skillctl sync
 欄位：`plugins`、`include`、`exclude`（清單會累加，exclude 最後套用）；
 `always_on`、`mode`（`copy` 或 `link`）後者覆蓋前者；`pin: {"name": "1.0.0"}` 固定版本。
 
+## 在專案裡自建的 skill 會自動送進 hub
+
+在任何專案的 `.claude/skills/` 自己新增 skill 後，不用手動搬：
+
+1. **偵測**：`init` 會註冊 SessionEnd hook。Claude Code 結束時，hook 發現 hub 還沒有的 skill，就在背景執行 `skillctl adopt`（紀錄在 `~/.skillhub/adopt.log`）。`sync` 和 `doctor` 也會列出這些 skill，`sync` 不會覆蓋它們。
+2. **送審**：`adopt` 補齊 frontmatter（版號、owner、`tier: domain`），在暫存 worktree 從 hub 的 `origin/main` 開 `adopt/<name>` 分支，加上 spec.md 與 CHANGELOG 草稿，推上去並用 `gh` 開 PR。不會動到你目前的 hub checkout。
+3. **審核**：hub CI 跑 lint；PR 只改動 `skills/domain/` 時，CI 通過就自動合併。動到其他地方的一律等人審。
+4. **接手**：合併後在 hub `git pull`，專案再 `skillctl sync`，這個 skill 就改由 hub 管理，之後其他專案也能 `install`。
+
+需要本機有 [GitHub CLI](https://cli.github.com/) 並已 `gh auth login`。在 `.skillhub.json`（或 `.skillhub.local.json`）設定 `"auto_adopt"`：
+
+| 值 | 行為 |
+|---|---|
+| `"pr"`（預設） | 自動開 PR 送審 |
+| `"notify"` | 只寫進 adopt.log，等你手動 `skillctl adopt` |
+| `"off"` | 不偵測 |
+
+手動用法：`skillctl adopt`（全部）、`skillctl adopt sql-style`、`--no-pr`（只複製到本機 hub）、`--again`（已收編過，再送一次更新）。
+
 ## 必裝的 Claude Code plugin
 
 hub 的 `skillhub.json` 用 `agent_plugins` 宣告每個專案都要有的 Claude Code plugin。目前必裝的是
