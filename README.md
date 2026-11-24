@@ -62,7 +62,39 @@ skillctl sync
 2. **測試**：`skillctl lint api-review`、`skillctl eval api-review`（目標 70–90%）
 3. **上架**：開 PR，CI 跑 lint；core/always-on 由 CODEOWNERS 審查；改動必須升版號
 4. **改進**：`skillctl stats` 看用量；`skillctl papercut ... --to-eval` 把回報轉成 eval
-5. **退場**：`skillctl eval <name> --ablation` 顯示沒差 → `status: deprecated` → `retired`
+5. **升級**：`skillctl promote <name>` 檢查條件後搬到上一層
+6. **退場**：`skillctl eval <name> --ablation` 顯示沒差 → `skillctl demote <name> --status deprecated` → `retired`
+
+## 分級、升級與退場
+
+skill 在哪個資料夾就是哪一級，新 skill 一律從 `domain` 開始。
+
+```bash
+skillctl promote api-review --dry-run   # 只列出升級條件是否通過
+skillctl promote api-review             # 全過才會 git mv 到上一層、改 tier、升 minor 版號、寫 CHANGELOG
+skillctl demote api-review --status deprecated --reason "ablation 無差異"
+skillctl demote api-review --status retired   # 各專案下次 sync 時移除
+skillctl demote api-review --to domain        # 降一層
+```
+
+| 升級 | 條件（預設） |
+|---|---|
+| domain → core | lint 無錯、active、有 owner、≥5 個 eval 案例、**目前版本** eval 通過率 ≥70%、30 天內 ≥2 個專案共 ≥10 次使用 |
+| core → always-on | 上述全部，加上 ≥8 個案例、跑過 `--ablation` 且有 skill 比沒有好、description ≤300 字元、≥3 個專案共 ≥30 次使用 |
+
+門檻可在 `skillhub.json` 覆蓋，例如 `"promotion": {"core": {"min_uses": 5}}`。條件不全過時可加 `--force`，原因會寫進 CHANGELOG，請在 PR 說明。
+使用量來自你本機的 `~/.skillhub/usage.jsonl`，多人團隊要合併紀錄可改送 OTLP（見「遙測」）。
+
+### 讓審查跟著分級（GitHub 設定）
+
+到 repo 的 **Settings → Branches**（或 Rules → Rulesets）替 `main` 開啟：
+
+1. Require a pull request before merging，Required approvals 設 1
+2. Require review from Code Owners
+3. Require status checks to pass：選 `lint`
+
+這樣 `domain/` 有 1 人 review 就能合併，`core/`、`always-on/`、`tools/` 則一定要 CODEOWNERS 裡的人審過。
+個人 repo 無法核准自己的 PR，只有自己一人時可先只開第 3 項。
 
 ## Eval 案例格式
 

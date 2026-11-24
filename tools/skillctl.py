@@ -19,6 +19,8 @@
   skillctl stats [--days 30]                  使用量統計與退場候選
   skillctl papercut <name> "問題描述"          回報小問題（之後可轉成 eval case）
   skillctl compile <name> [--run]             由 spec.md 產生 SKILL.md 草稿
+  skillctl promote <name> [--to core|always-on] [--dry-run]   檢查條件並升級
+  skillctl demote <name> [--to ...] [--status deprecated|retired]
 """
 from __future__ import annotations
 
@@ -198,6 +200,9 @@ def lint_skill(s: dict) -> list[str]:
     n_lines = len(s["body"].splitlines())
     if n_lines > MAX_BODY_LINES:
         errs.append(f"SKILL.md 本文 {n_lines} 行，超過 {MAX_BODY_LINES} 行；把細節移到 references/")
+    meta_tier = (fm.get("metadata") or {}).get("tier") if isinstance(fm.get("metadata"), dict) else None
+    if meta_tier and meta_tier != s["tier"]:
+        errs.append(f"metadata.tier「{meta_tier}」與所在資料夾「{s['tier']}」不一致")
     if not SEMVER_RE.match(s["version"]):
         errs.append("metadata.version 必須是 x.y.z")
     if not s["owner"]:
@@ -671,6 +676,138 @@ def cmd_compile(a):
     print(f"✓ 草稿寫到 {out.relative_to(HUB_ROOT)}，確認後覆蓋 SKILL.md 並把 version 加一")
 
 
+# ---------------------------------------------------------------- promote / demote
+# 升級門檻：可在 skillhub.json 的 "promotion" 欄位覆蓋
+PROMOTION_RULES = {
+    "core": {"min_projects": 2, "min_uses": 10, "min_cases": 5, "min_pass": 0.7, "need_ablation": False, "max_desc": 1024},
+    "always-on": {"min_projects": 3, "min_uses": 30, "min_cases": 8, "min_pass": 0.7, "need_ablation": True, "max_desc": 300},
+}
+
+
+def set_meta(s: dict, **kv):
+    """改寫 SKILL.md frontmatter metadata 中的欄位（保留其他內容）。"""
+    md = s["path"] / "SKILL.md"
+    text = md.read_text(encoding="utf-8")
+    end = text.find("\n---", 3)
+    head, rest = text[:end], text[end:]
+    for k, v in kv.items():
+        pat = re.compile(rf"^(\s+){k}:.*$", re.M)
+        if pat.search(head):
+            head = pat.sub(lambda m: f"{m.group(1)}{k}: {v}", head, count=1)
+        else:
+            head = re.sub(r"^metadata:\s*$", f"metadata:\n  {k}: {v}", head, count=1, flags=re.M)
+    md.write_text(head + rest, encoding="utf-8")
+
+
+def bump(version: str, part: str) -> str:
+    ma, mi, pa = (int(x) for x in (version if SEMVER_RE.match(version) else "0.0.0").split("."))
+    return {"major": f"{ma + 1}.0.0", "minor": f"{ma}.{mi + 1}.0", "patch": f"{ma}.{mi}.{pa + 1}"}[part]
+
+
+def changelog(s: dict, version: str, line: str):
+    f = s["path"] / "CHANGELOG.md"
+    old = f.read_text(encoding="utf-8") if f.exists() else "# Changelog\n"
+    title, _, body = old.partition("\n")
+    f.write_text(f"{title}\n\n## {version} — {dt.date.today().isoformat()}\n- {line}\n{body}", encoding="utf-8")
+
+
+def move_skill(s: dict, tier: str) -> Path:
+    dest = HUB_ROOT / "skills" / tier / s["name"]
+    in_git = subprocess.run(["git", "rev-parse"], cwd=HUB_ROOT, capture_output=True).returncode == 0
+    tracked = in_git and subprocess.run(["git", "ls-files", "--error-unmatch", str(s["path"] / "SKILL.md")],
+                                        cwd=HUB_ROOT, capture_output=True).returncode == 0
+    if tracked:
+        subprocess.run(["git", "mv", str(s["path"]), str(dest)], cwd=HUB_ROOT, check=True)
+    else:
+        shutil.move(str(s["path"]), str(dest))
+    return dest
+
+
+def promotion_checks(s: dict, target: str, days: int) -> list[tuple[bool, str]]:
+    rules = dict(PROMOTION_RULES[target])
+    rules.update(read_json(HUB_ROOT / "skillhub.json").get("promotion", {}).get(target, {}))
+    checks = []
+    errs = [m for m in lint_skill(s) if m.startswith("ERROR")]
+    checks.append((not errs, "lint 無錯誤" + (f"（{len(errs)} 個錯誤）" if errs else "")))
+    checks.append((s["status"] == "active", f"狀態為 active（目前 {s['status']}）"))
+    checks.append((bool(s["owner"]), f"有負責人（{s['owner'] or '未填'}）"))
+    try:
+        n_cases = len(load_cases(s)) if (s["path"] / "evals" / "cases.jsonl").exists() else 0
+    except json.JSONDecodeError:
+        n_cases = 0
+    checks.append((n_cases >= rules["min_cases"], f"eval 案例 ≥ {rules['min_cases']}（目前 {n_cases}）"))
+    res = read_json(s["path"] / "evals" / "last_result.json")
+    rate = res.get("pass_rate")
+    fresh = res.get("version") == s["version"]
+    checks.append((rate is not None and fresh and rate >= rules["min_pass"],
+                   f"目前版本的 eval 通過率 ≥ {rules['min_pass']:.0%}（"
+                   + ("沒跑過 eval" if rate is None else f"{rate:.0%}" + ("" if fresh else f"，但跑的是 v{res.get('version')}")) + "）"))
+    if rules["need_ablation"]:
+        base = res.get("baseline_pass_rate")
+        checks.append((base is not None and rate is not None and rate > base,
+                       "ablation 顯示 skill 有幫助（" + ("沒跑過 --ablation" if base is None else f"有 {rate:.0%} / 無 {base:.0%}") + "）"))
+    checks.append((len(s["description"]) <= rules["max_desc"], f"description ≤ {rules['max_desc']} 字元（目前 {len(s['description'])}）"))
+    rows = [r for r in read_usage(days) if r.get("skill") == s["name"] and r.get("event") == "skill_invoked"]
+    projects = {r.get("project") for r in rows}
+    checks.append((len(projects) >= rules["min_projects"], f"{days} 天內被 ≥ {rules['min_projects']} 個專案使用（目前 {len(projects)}）"))
+    checks.append((len(rows) >= rules["min_uses"], f"{days} 天內使用 ≥ {rules['min_uses']} 次（目前 {len(rows)}）"))
+    return checks
+
+
+def cmd_promote(a):
+    s = find_skill(a.name)
+    order = list(TIERS)[::-1]  # domain → core → always-on
+    if s["tier"] == "always-on":
+        die(f"{s['name']} 已經是 always-on")
+    target = a.to or order[order.index(s["tier"]) + 1]
+    if order.index(target) <= order.index(s["tier"]):
+        die(f"{s['tier']} → {target} 不是升級；降級請用 skillctl demote")
+    print(f"{s['name']}：{s['tier']} → {target}")
+    checks = promotion_checks(s, target, a.days)
+    for ok, msg in checks:
+        print(f"  {'✓' if ok else '✗'} {msg}")
+    failed = [m for ok, m in checks if not ok]
+    if failed and not a.force:
+        print(f"\n{len(failed)} 項未通過，沒有變更。補齊後再試，或加 --force 強制升級（請在 PR 說明理由）")
+        sys.exit(1)
+    if a.dry_run:
+        print("\n（dry-run，沒有變更）")
+        return
+    new_v = bump(s["version"], "minor")
+    dest = move_skill(s, target)
+    s2 = load_skill(dest)
+    set_meta(s2, tier=target, version=new_v)
+    changelog(s2, new_v, f"升級為 {target}" + ("（--force：" + "；".join(failed) + "）" if failed else ""))
+    print(f"\n✓ 已搬到 skills/{target}/{s['name']}，版本 {s['version']} → {new_v}")
+    print("  下一步：git checkout -b promote-" + s["name"] + " && git add -A && git commit，開 PR（需 Code Owner 審查）")
+
+
+def cmd_demote(a):
+    s = find_skill(a.name)
+    order = list(TIERS)[::-1]
+    if not a.to and not a.status:
+        die("請指定 --to <層級> 或 --status deprecated|retired|active")
+    path, notes = s["path"], []
+    if a.to:
+        if order.index(a.to) >= order.index(s["tier"]):
+            die(f"{s['tier']} → {a.to} 不是降級；升級請用 skillctl promote")
+        path = move_skill(s, a.to)
+        notes.append(f"降級為 {a.to}")
+    s2 = load_skill(path)
+    new_v = bump(s["version"], "minor" if a.to else "patch")
+    meta = {"version": new_v}
+    if a.to:
+        meta["tier"] = a.to
+    if a.status:
+        meta["status"] = a.status
+        notes.append(f"狀態改為 {a.status}")
+    set_meta(s2, **meta)
+    changelog(s2, new_v, "；".join(notes) + (f"。原因：{a.reason}" if a.reason else ""))
+    print(f"✓ {s['name']}：{'；'.join(notes)}，版本 {s['version']} → {new_v}")
+    if a.status == "retired":
+        print("  retired 的 skill 會在各專案下次 skillctl sync 時被移除")
+
+
 # ---------------------------------------------------------------- main
 def main(argv=None):
     p = argparse.ArgumentParser(prog="skillctl", description="通用 Agent Skill 管理工具")
@@ -730,6 +867,21 @@ def main(argv=None):
     x.add_argument("name")
     x.add_argument("--run", action="store_true")
     x.set_defaults(fn=cmd_compile)
+
+    x = sub.add_parser("promote", help="檢查升級條件並升級 skill（domain → core → always-on）")
+    x.add_argument("name")
+    x.add_argument("--to", choices=("core", "always-on"))
+    x.add_argument("--days", type=int, default=30, help="看幾天內的使用量")
+    x.add_argument("--dry-run", action="store_true", help="只檢查，不變更")
+    x.add_argument("--force", action="store_true", help="條件未全過也升級")
+    x.set_defaults(fn=cmd_promote)
+
+    x = sub.add_parser("demote", help="降級或標記 deprecated / retired")
+    x.add_argument("name")
+    x.add_argument("--to", choices=("core", "domain"))
+    x.add_argument("--status", choices=("active", "deprecated", "retired"))
+    x.add_argument("--reason", default="")
+    x.set_defaults(fn=cmd_demote)
 
     a = p.parse_args(argv)
     a.fn(a)
