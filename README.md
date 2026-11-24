@@ -104,6 +104,21 @@ hub 的 `skillhub.json` 用 `agent_plugins` 宣告每個專案都要有的 Claud
 - `provides` 列出 plugin 內建的 skill 名稱，hub 裡的 skill 不能同名（lint 會擋），避免兩份指令互相衝突。
 - `skillctl doctor` 檢查專案的 skill、hook、必裝 plugin 是否都到位。
 
+## 選用組合包：pstack
+
+[pstack](https://github.com/cursor/plugins/tree/main/pstack) 是 poteto（Lauren Tan）的工程方法 plugin，約 60 個 skill 加 2 個 agent。它和必裝的 superpowers 在 TDD、規劃、驗證、review 上重疊，所以**不放 always-on**，做成選用組合包：
+
+```bash
+skillctl install plugin:pstack     # 或 skillctl init --plugins starter pstack
+```
+
+- 在 Claude Code 啟用 `pstack@cursor-plugins`（marketplace `cursor/plugins`），指令帶前綴，例如 `/pstack:interrogate`。Cursor 用 `/add-plugin pstack` 手動安裝；目前沒有 Codex 版本。
+- 同時安裝 domain skill `pstack-routing` 負責分工：TDD、規劃、除錯、驗證、review 交給 superpowers；`interrogate`、`why`、`how`、`unslop`、`reflect`、`swarm`/`arena` 交給 pstack；`/poteto-mode` 只在你明確要求時用。
+- `sync` 和 `doctor` 會檢查重疊是否已由路由 skill 分工；pstack 的 skill 名稱也列入保留名，hub 不能用（例如 `tdd`、`why`）。
+- plugin 無法只開其中幾個 skill。若想只用少數幾個，得把它們複製進 hub（MIT 授權，需註明來源並固定版本），但那會變成要自己同步的副本，所以預設不這麼做。
+
+組合包格式也因此擴充：`plugins/<名稱>.json` 可以加 `agent_plugins`，選了組合包才會啟用那些外部 plugin；`overlaps` 標示與哪個 plugin 重疊，`router` 指定負責分工的 skill。
+
 ## Skill 生命週期
 
 1. **撰寫**：`skillctl new api-review --tier domain` → 填 `spec.md`（可搭配 superpowers 的 `writing-skills`） → `skillctl compile api-review --run` 產生 SKILL.md 草稿

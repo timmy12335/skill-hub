@@ -190,7 +190,7 @@ def lint_skill(s: dict) -> list[str]:
         errs.append(f"frontmatter name「{fm.get('name')}」必須等於資料夾名稱「{p.name}」")
     clash = reserved_names().get(p.name)
     if clash:
-        errs.append(f"名稱與必裝 plugin {clash} 的 skill 重複，請改名（例如加上領域前綴）")
+        errs.append(f"名稱與 plugin {clash} 的 skill 重複，請改名（例如加上領域前綴）")
     if not NAME_RE.match(p.name) or len(p.name) > 64:
         errs.append("名稱只能用小寫英數與連字號，且不超過 64 字元")
     desc = s["description"]
@@ -254,6 +254,11 @@ def cmd_lint(a):
         for m in msgs:
             print(f"    {m}")
     for pf in sorted((HUB_ROOT / "plugins").glob("*.json")):
+        for ap in read_json(pf).get("agent_plugins", []):
+            aid = ap if isinstance(ap, str) else ap.get("id", "")
+            if "@" not in aid:
+                print(f"✗ plugins/{pf.name} 的 agent_plugins「{aid}」要寫成 名稱@marketplace")
+                n_err += 1
         for n in read_json(pf).get("skills", []):
             if n not in skills:
                 print(f"✗ plugins/{pf.name} 引用不存在的 skill：{n}")
@@ -337,9 +342,34 @@ def layered_config(project: Path) -> dict:
     return cfg
 
 
+def bundle_agent_plugins(cfg: dict) -> list:
+    """組合包（plugins/<名稱>.json）也可以帶外部 agent plugin，選了組合包才會啟用，屬於選用。"""
+    out = []
+    for pl in cfg["plugins"]:
+        for ap in read_json(HUB_ROOT / "plugins" / f"{pl}.json").get("agent_plugins", []):
+            ap = {"id": ap} if isinstance(ap, str) else dict(ap)
+            ap["required"] = False
+            ap["bundle"] = pl
+            out.append(ap)
+    return out
+
+
+def plugin_conflicts(aps: list) -> list:
+    """回傳 [(plugin, 另一個 plugin, 重疊說明)]：兩個功能重疊的 plugin 同時啟用時提醒。"""
+    ids = {ap["id"] for ap in aps}
+    out = []
+    for ap in aps:
+        for other, why in (ap.get("overlaps") or {}).items():
+            if other in ids:
+                out.append((ap["id"], other, why))
+    return out
+
+
 def wanted_agent_plugins(cfg: dict, warn: bool = False) -> list:
     out = []
-    for ap in cfg["agent_plugins"]:
+    seen = {ap["id"] for ap in cfg["agent_plugins"]}
+    extra = [ap for ap in bundle_agent_plugins(cfg) if ap["id"] not in seen]
+    for ap in cfg["agent_plugins"] + extra:
         if ap["id"] in cfg["exclude_agent_plugins"]:
             if ap.get("required"):
                 if warn:
@@ -354,6 +384,13 @@ def ensure_agent_plugins(project: Path, cfg: dict, dry_run: bool = False) -> lis
     """把 Claude Code plugin 寫進專案的 .claude/settings.json（enabledPlugins + extraKnownMarketplaces）。
     專案被信任後，Claude Code 會提示安裝並啟用；不會把 plugin 的檔案複製進專案。"""
     aps = wanted_agent_plugins(cfg, warn=True)
+    wanted_skills = resolve_wanted(cfg)
+    for a_id, b_id, why in plugin_conflicts(aps):
+        router = next((ap.get("router") for ap in aps if ap["id"] == a_id), None)
+        if router and router in wanted_skills:
+            print(f"… {a_id.split('@')[0]} 與 {b_id.split('@')[0]} 功能重疊（{why}），已由 {router} 分工")
+        else:
+            print(f"! {a_id.split('@')[0]} 和 {b_id.split('@')[0]} 功能重疊（{why}），可能互搶觸發")
     if "claude" not in cfg["agents"]:
         return aps  # 只有 Claude Code 能用 settings.json 宣告 plugin；其他 agent 由 doctor 提示手動安裝
     settings_p = project / ".claude" / "settings.json"
@@ -376,10 +413,13 @@ def ensure_agent_plugins(project: Path, cfg: dict, dry_run: bool = False) -> lis
 def reserved_names() -> dict:
     """agent plugin 已提供的 skill 名稱，hub 內不能重名，避免兩份指令互相打架。"""
     out = {}
-    for ap in read_json(HUB_ROOT / "skillhub.json").get("agent_plugins", []):
+    aps = list(read_json(HUB_ROOT / "skillhub.json").get("agent_plugins", []))
+    for pf in sorted((HUB_ROOT / "plugins").glob("*.json")):  # 組合包裡的選用 plugin 也算
+        aps += read_json(pf).get("agent_plugins", [])
+    for ap in aps:
         if isinstance(ap, dict):
             for n in ap.get("provides", []):
-                out[n] = ap["id"]
+                out.setdefault(n, ap["id"])
     return out
 
 
@@ -1201,9 +1241,16 @@ def cmd_doctor(a):
         if "claude" in agents:
             on = st.get("enabledPlugins", {}).get(ap["id"]) is True
             checks.append((on, f"Claude Code plugin {ap['id']} 已在 settings.json 啟用" + ("（必裝）" if ap.get("required") else "")))
-        if others and ap.get("required"):
+        if others and (ap.get("required") or ap.get("bundle")):
             home = ap.get("homepage") or (f"https://github.com/{ap['marketplace']['repo']}" if ap.get("marketplace") else "")
-            print(f"提醒：{ap['id'].split('@')[0]} 在 {', '.join(others)} 需要手動安裝一次（每台電腦一次），見 {home}")
+            how = "；".join(f"{x}：{ap['install'][x]}" for x in others if x in (ap.get("install") or {}))
+            print(f"提醒：{ap['id'].split('@')[0]} 在 {', '.join(others)} 需要手動安裝一次（每台電腦一次）"
+                  + (f"，{how}" if how else "") + f"，見 {home}")
+    aps_all = wanted_agent_plugins(cfg)
+    for a_id, b_id, why in plugin_conflicts(aps_all):
+        router = next((ap.get("router") for ap in aps_all if ap["id"] == a_id), None)
+        ok = bool(router) and (project / main_dir / router).exists()
+        checks.append((ok, f"{a_id.split('@')[0]} 與 {b_id.split('@')[0]} 的重疊（{why}）已由 {router or '路由 skill'} 分工"))
     for ok, msg in checks:
         print(f"{'✓' if ok else '✗'} {msg}")
     bad = sum(not ok for ok, _ in checks)

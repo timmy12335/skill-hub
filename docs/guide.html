@@ -140,6 +140,7 @@ footer{margin-top:64px;padding-top:24px;border-top:1px solid var(--line);font-si
     <li><a href="#adopt">導入新專案</a></li>
     <li><a href="#config">分層設定</a></li>
     <li><a href="#superpowers">必裝 plugin</a></li>
+    <li><a href="#pstack">選用：pstack</a></li>
     <li><a href="#agents">Codex 與 Cursor</a></li>
     <li><a href="#author">寫新 skill</a></li>
     <li><a href="#adopt-flow">自建 skill 送審</a></li>
@@ -334,6 +335,19 @@ cd ~/projects/my-app &amp;&amp; skillctl sync      <span class="c"># 只會更�
     </tbody>
   </table></div>
   <p>專案需要其他 plugin 時，在 <code>.skillhub.json</code> 的 <code>agent_plugins</code> 加上 id 即可，例如 <code>["playwright@claude-plugins-official"]</code>。</p>
+  <h3 id="pstack">選用組合包：pstack</h3>
+  <p><a href="https://github.com/cursor/plugins/tree/main/pstack" target="_blank" rel="noopener">pstack</a> 是 poteto（Lauren Tan）的工程方法 plugin，約 60 個 skill 加 2 個 agent。它和必裝的 superpowers 在 TDD、規劃、驗證、review 上重疊，所以不放 always-on，做成只在需要時才開的組合包：</p>
+  <div class="pre"><pre>skillctl install plugin:pstack</pre></div>
+  <p>這會在 Claude Code 啟用 <code>pstack@cursor-plugins</code>，並安裝負責分工的 <code>pstack-routing</code> skill：</p>
+  <div class="tbl"><table>
+    <thead><tr><th>交給</th><th>用在</th></tr></thead>
+    <tbody>
+      <tr><td>superpowers</td><td>規劃、TDD、除錯、完成前驗證、code review、分支收尾</td></tr>
+      <tr><td>pstack</td><td><code>interrogate</code> 對抗式審查、<code>why</code>／<code>how</code> 查設計理由與運作、<code>unslop</code> 去 AI 腔、<code>reflect</code> 寫回教訓、<code>swarm</code>／<code>arena</code> 平行嘗試（先問過你）</td></tr>
+      <tr><td>不主動用</td><td><code>/poteto-mode</code>：它會自己串整套流程，只在你明確要求時使用</td></tr>
+    </tbody>
+  </table></div>
+  <p><code>doctor</code> 會檢查重疊是否已由路由 skill 分工。Cursor 要用 <code>/add-plugin pstack</code> 手動安裝，目前沒有 Codex 版本。plugin 無法只開其中幾個 skill；若要只挑幾個，得複製進 hub 並固定版本，會多一份要自己同步的副本，所以預設不這麼做。</p>
 </section>
 
 <section id="agents">

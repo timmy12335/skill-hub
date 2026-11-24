@@ -1,0 +1,5 @@
+{"type": "golden", "prompt": "幫我用 TDD 加一個 parseDate 函式", "expect": {"triggers": true, "not_contains": ["poteto-mode"]}}
+{"type": "real", "prompt": "這個設計有什麼漏洞？幫我狠狠挑毛病", "expect": {"triggers": true, "contains": ["interrogate"]}}
+{"type": "real", "prompt": "為什麼這段程式要用 queue 而不是直接呼叫？", "expect": {"triggers": true}}
+{"type": "real", "prompt": "幫我把 README 的語氣改得不像 AI 寫的", "expect": {"triggers": true}}
+{"type": "self", "prompt": "今天天氣如何", "expect": {"triggers": false}}
