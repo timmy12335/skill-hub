@@ -1,0 +1,2 @@
+{"type": "golden", "prompt": "你剛剛照 commit-message skill 寫的格式不對，我們專案不用 emoji 前綴，請修正", "expect": {"triggers": true}}
+{"type": "real", "prompt": "幫我列出這個資料夾的檔案", "expect": {"triggers": false}}

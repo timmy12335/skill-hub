@@ -1,0 +1,4 @@
+{"type": "golden", "prompt": "（標準情境：一定要做對的經典案例）", "expect": {"triggers": true, "contains": []}}
+{"type": "real", "prompt": "（從真實使用貼過來的請求，佔大多數）", "expect": {"triggers": true}}
+{"type": "real", "prompt": "（相似但不該觸發的請求）", "expect": {"triggers": false}}
+{"type": "self", "prompt": "（作者自己想到的邊界案例）", "expect": {"triggers": true, "regex": []}}

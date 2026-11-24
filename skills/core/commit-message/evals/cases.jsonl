@@ -1,0 +1,5 @@
+{"type": "golden", "prompt": "我 stage 好了，幫我寫 commit message", "expect": {"triggers": true, "regex": ["(feat|fix|refactor|docs|test|chore|perf|build|ci)(\\(.+\\))?: "]}, "setup": "git init -q && git config user.email t@t && git config user.name t && printf 'def add(a, b):\\n    return a + b\\n' > calc.py && git add calc.py"}
+{"type": "real", "prompt": "commit 一下剛剛的修改", "expect": {"triggers": true}}
+{"type": "real", "prompt": "幫我寫這次改動的 commit 訊息，用英文", "expect": {"triggers": true}}
+{"type": "real", "prompt": "幫我看最近 5 筆 git log", "expect": {"triggers": false}}
+{"type": "self", "prompt": "沒有任何 staged 變更時幫我 commit", "expect": {"triggers": true, "not_contains": ["git commit -m"]}}
