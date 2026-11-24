@@ -1,7 +1,7 @@
 name: skills-ci
 on:
   pull_request:
-    paths: ["skills/**", "plugins/**", "tools/**", "templates/**"]
+    paths: ["skills/**", "plugins/**", "tools/**", "templates/**", "security/**", "skillhub.json"]
   push:
     branches: [main]
 
@@ -55,14 +55,102 @@ jobs:
             python3 tools/skillctl.py eval "$s"
           done
 
-  # skillctl adopt 開的 adopt/<name> PR：只動到 skills/domain/ 且 lint 通過就自動合併
-  # （core / always-on / tools 的改動不會走這條，一定要人審）
+  # 找出這個 PR 改到哪些 skill（給安全掃描用）
+  changes:
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    outputs:
+      skills: ${{ steps.c.outputs.skills }}
+      adopt_path: ${{ steps.c.outputs.adopt_path }}
+    steps:
+      - uses: actions/checkout@v4
+        with: { fetch-depth: 0 }
+      - id: c
+        run: |
+          dirs=$(git diff --name-only "${{ github.event.pull_request.base.sha }}" "${{ github.event.pull_request.head.sha }}" -- skills \
+                 | cut -d/ -f1-3 | sort -u | while read d; do [ -f "$d/SKILL.md" ] && echo "$d"; done)
+          echo "skills=$(echo $dirs)" >> "$GITHUB_OUTPUT"
+          # adopt/<name> PR 只會有一個 skills/domain/<name>
+          echo "adopt_path=$(echo "$dirs" | grep '^skills/domain/' | head -1)" >> "$GITHUB_OUTPUT"
+
+  # 第一層（每個改到 skill 的 PR 都跑，會擋）：skillctl scan，後端看 skillhub.json security.scanner
+  # 預設 NVIDIA SkillSpector 靜態分析，不送 LLM、不用 API key。
+  # 超過門檻就失敗；確認是誤判 → 本機 skillctl scan --accept 寫進 security/scan-results.json，跟 PR 一起送審。
+  security:
+    needs: changes
+    if: needs.changes.outputs.skills != ''
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      security-events: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v6
+      - name: Install scanner
+        run: |
+          scanner=$(python3 -c "import json;print(json.load(open('skillhub.json')).get('security',{}).get('scanner','skillspector'))")
+          echo "SCANNER=$scanner" >> "$GITHUB_ENV"
+          if [ "$scanner" = cisco ]; then uv tool install cisco-ai-skill-scanner
+          else uv tool install --python 3.13 git+https://github.com/NVIDIA/skillspector.git; fi
+      - name: Scan changed skills (static)
+        run: |
+          names=""; for d in ${{ needs.changes.outputs.skills }}; do names="$names $(basename "$d")"; done
+          python3 tools/skillctl.py scan $names
+      - name: SARIF report
+        if: always()
+        run: |
+          mkdir -p sarif
+          for d in ${{ needs.changes.outputs.skills }}; do
+            n=$(basename "$d")
+            if [ "$SCANNER" = cisco ]; then skill-scanner scan "$d" --policy low-noise --lenient --format sarif --output-sarif "sarif/$n.sarif" || true
+            else skillspector scan "$d" --no-llm --format sarif --output "sarif/$n.sarif" || true; fi
+          done
+      - name: Upload SARIF to code scanning
+        if: always()
+        continue-on-error: true   # 私有 repo 沒開 code scanning 時不擋
+        uses: github/codeql-action/upload-sarif@v3
+        with: { sarif_file: sarif, category: skill-scan }
+
+  # 第二層（只在 adopt/ 自動合併的 domain PR 跑）：Cisco skill-scanner + LLM judge
+  # 靜態規則只抓到約 8% 的惡意 skill，自動合併沒有人看，所以多一層語意判斷。
+  # 預設關閉：設 repo variable SKILL_SCANNER_LLM=true，並加 secret SKILL_SCANNER_LLM_API_KEY（LLM 供應商的 key）。
+  # 沒開時這層略過，自動合併照樣只看第一層。
+  llm-judge:
+    needs: changes
+    if: >-
+      startsWith(github.head_ref, 'adopt/') &&
+      vars.SKILL_SCANNER_LLM == 'true' &&
+      needs.changes.outputs.adopt_path != ''
+    uses: cisco-ai-defense/skill-scanner/.github/workflows/scan-skills.yml@2.3.2
+    with:
+      scanner_version: "2.3.2"
+      skill_path: ${{ needs.changes.outputs.adopt_path }}
+      scan_mode: scan
+      policy: low-noise
+      fail_on_severity: high
+      use_llm: true
+      llm_model: ${{ vars.SKILL_SCANNER_LLM_MODEL || 'anthropic/claude-sonnet-5-5' }}
+      upload_sarif: false
+    secrets:
+      llm_api_key: ${{ secrets.SKILL_SCANNER_LLM_API_KEY }}
+    permissions:
+      security-events: write
+      contents: read
+      actions: read
+
+  # skillctl adopt 開的 adopt/<name> PR：只動到 skills/domain/ 且 lint、安全掃描都通過就自動合併
+  # （core / always-on / tools 的改動不會走這條，一定要人審；
+  #   在 security/scan-results.json 接受風險也算「超出 skills/domain/」，一樣要人審）
   auto-merge-adopted:
     if: >-
+      always() &&
       github.event_name == 'pull_request' &&
       startsWith(github.head_ref, 'adopt/') &&
-      github.event.pull_request.head.repo.full_name == github.repository
-    needs: lint
+      github.event.pull_request.head.repo.full_name == github.repository &&
+      needs.lint.result == 'success' &&
+      needs.security.result == 'success' &&
+      (needs.llm-judge.result == 'success' || needs.llm-judge.result == 'skipped')
+    needs: [lint, security, llm-judge]
     runs-on: ubuntu-latest
     permissions:
       contents: write

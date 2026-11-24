@@ -38,5 +38,20 @@
       "gitnexus",
       "understand-anything"
     ]
+  },
+  "security": {
+    "scanner": "skillspector",
+    "install": "uv tool install --python 3.13 git+https://github.com/NVIDIA/skillspector.git",
+    "max_score": 50,
+    "block": [
+      "DO_NOT_INSTALL"
+    ],
+    "llm": false,
+    "baseline": ".skillspector-baseline.yaml",
+    "cisco": {
+      "install": "uv tool install cisco-ai-skill-scanner",
+      "policy": "low-noise",
+      "fail_on_severity": "high"
+    }
   }
 }

@@ -23,6 +23,7 @@ skill-hub/
 │           ├── evals/cases.jsonl
 │           └── CHANGELOG.md
 ├── plugins/*.json      skill 組合包
+├── security/scan-results.json  安全掃描結果與已接受的風險
 ├── templates/skill/    新 skill 範本
 ├── hooks/skillhub_usage.py   使用量紀錄 hook
 ├── tools/skillctl.py   CLI
@@ -63,7 +64,7 @@ skillctl sync
 
 1. **偵測**：`init` 會註冊 SessionEnd hook。Claude Code 結束時，hook 發現 hub 還沒有的 skill，就在背景執行 `skillctl adopt`（紀錄在 `~/.skillhub/adopt.log`）。`sync` 和 `doctor` 也會列出這些 skill，`sync` 不會覆蓋它們。
 2. **送審**：`adopt` 補齊 frontmatter（版號、owner、`tier: domain`），在暫存 worktree 從 hub 的 `origin/main` 開 `adopt/<name>` 分支，加上 spec.md 與 CHANGELOG 草稿，推上去並用 `gh` 開 PR。不會動到你目前的 hub checkout。
-3. **審核**：hub CI 跑 lint；PR 只改動 `skills/domain/` 時，CI 通過就自動合併。動到其他地方的一律等人審。
+3. **審核**：送出前 `adopt` 先做安全掃描，被擋的不送。hub CI 跑 lint 與安全掃描（有開的話再加 LLM 判讀，見[安全掃描](#安全掃描)）；PR 只改動 `skills/domain/` 時，全部通過就自動合併。動到其他地方的一律等人審。
 4. **接手**：合併後在 hub `git pull`，專案再 `skillctl sync`，這個 skill 就改由 hub 管理，之後其他專案也能 `install`。
 
 需要本機有 [GitHub CLI](https://cli.github.com/) 並已 `gh auth login`。在 `.skillhub.json`（或 `.skillhub.local.json`）設定 `"auto_adopt"`：
@@ -140,6 +141,61 @@ skillctl tools --run    # 直接執行（會跑第三方安裝程式）
 - **同類工具只開一個**：graphify、GitNexus、understand-anything 都是程式碼圖譜，同時開會互搶；`sync` 和 `doctor` 會警告。
 - **GitNexus**：非商業授權，商業專案不要用。一律用 `gitnexus analyze --index-only`；不加這個參數它會改寫 CLAUDE.md／AGENTS.md、註冊 hook、安裝 skill，和 skill-hub 搶著管專案設定。
 
+## 安全掃描
+
+skill 本身就是會被 agent 執行的指令和腳本，所以 hub 在三個地方掃描：
+
+| 時機 | 誰執行 | 擋不擋 |
+|---|---|---|
+| `skillctl adopt` 送審前 | 本機 | 被擋的 skill 不送 PR |
+| `skillctl tools --run` 安裝外部工具前 | 本機 | 被擋的工具不安裝 |
+| 每個改到 `skills/` 的 PR（CI `security` job） | GitHub Actions | 會擋，自動合併也要它通過 |
+| `adopt/` 自動合併 PR（CI `llm-judge` job，選用） | GitHub Actions | 會擋自動合併 |
+
+`skillctl doctor` 會列出每個外部工具與 plugin 的最近掃描結果；沒掃過的會提醒。
+
+### 兩個掃描器，一次用一個
+
+`skillhub.json` 的 `security.scanner` 決定 `skillctl scan` 和 CI `security` job 用哪個（臨時切換：`skillctl scan --scanner cisco` 或 `SKILLHUB_SCANNER=cisco`）：
+
+| | [NVIDIA SkillSpector](https://github.com/NVIDIA/skillspector)（預設） | [Cisco skill-scanner](https://github.com/cisco-ai-defense/skill-scanner) |
+|---|---|---|
+| 安裝 | `uv tool install --python 3.13 git+https://github.com/NVIDIA/skillspector.git` | `uv tool install cisco-ai-skill-scanner` |
+| 判斷方式 | 0–100 風險分數 + SAFE / CAUTION / DO_NOT_INSTALL | 最高嚴重度（INFO…CRITICAL）+ 政策預設 |
+| 門檻設定 | `max_score`（預設 50）、`block` | `cisco.fail_on_severity`（預設 high）、`cisco.policy`（預設 low-noise） |
+| 輸出 | 兩者都統一成同一格式寫進 `security/scan-results.json` | |
+
+兩個都預設只做本機靜態分析，不送資料給 LLM、不用 API key。`skillctl scan --llm` 或 `"llm": true` 才會加上 LLM 分析（要自己設供應商的 key）。
+
+```bash
+skillctl scan                    # 掃 hub 全部 skill
+skillctl scan sql-style ./x      # skill 名稱或路徑
+skillctl scan tool:archify       # 外部工具（掃它的 repo）
+skillctl scan bundle:docs-visual # 組合包裡的 skill、工具、plugin
+```
+
+### 誤判怎麼辦
+
+靜態規則會誤判。例如 archify 的 `archify-pr` 在 SkillSpector 拿 60 分（DO_NOT_INSTALL），在 Cisco 被標成 CRITICAL `command_injection`，其實是它本來就要執行 `gh` 和 git 指令。確認後：
+
+```bash
+skillctl scan --accept tool:archify --reason "archify-pr 呼叫 gh/git 是預期行為，已讀過 bin/archify-pr.mjs"
+```
+
+接受紀錄（理由、誰、日期、當時分數）寫進 `security/scan-results.json`，跟著 PR 讓人審。分數改變或換掃描器後要重新接受。改到這個檔案的 PR 不在 `skills/domain/` 範圍內，所以**一定要人審**，不會被自動合併。
+
+### 自動合併的第二層：Cisco + LLM 判讀（選用）
+
+`adopt/` PR 沒有人看就會合併，而靜態規則只抓到約 8% 的惡意 skill（Cisco 公布的數據；加上 LLM 判讀可到約 67%）。所以這種 PR 可以多跑一層 Cisco 的 [GitHub Action](https://github.com/cisco-ai-defense/skill-scanner/blob/main/docs/github-actions.md)，用 LLM 判讀：
+
+1. repo **Settings → Secrets and variables → Actions**：
+   - Secret `SKILL_SCANNER_LLM_API_KEY`：LLM 供應商的 key
+   - Variable `SKILL_SCANNER_LLM=true`
+   - （選用）Variable `SKILL_SCANNER_LLM_MODEL`，預設 `anthropic/claude-sonnet-5-5`
+2. 之後每個 `adopt/` PR 會多一個 `llm-judge` job，HIGH 以上就不自動合併，留給人審。
+
+沒開時這層略過，自動合併只看第一層。一般 PR 不跑這層，避免兩個掃描器重複擋。
+
 ## Skill 生命週期
 
 1. **撰寫**：`skillctl new api-review --tier domain` → 填 `spec.md`（可搭配 superpowers 的 `writing-skills`） → `skillctl compile api-review --run` 產生 SKILL.md 草稿
@@ -175,7 +231,7 @@ skillctl demote api-review --to domain        # 降一層
 
 1. Require a pull request before merging，Required approvals 設 1
 2. Require review from Code Owners
-3. Require status checks to pass：選 `lint`
+3. Require status checks to pass：選 `lint` 和 `security`
 
 這樣 `domain/` 有 1 人 review 就能合併，`core/`、`always-on/`、`tools/` 則一定要 CODEOWNERS 裡的人審過。
 個人 repo 無法核准自己的 PR，只有自己一人時可先只開第 3 項。

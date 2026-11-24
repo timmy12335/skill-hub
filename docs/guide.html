@@ -145,6 +145,7 @@ footer{margin-top:64px;padding-top:24px;border-top:1px solid var(--line);font-si
     <li><a href="#agents">Codex 與 Cursor</a></li>
     <li><a href="#author">寫新 skill</a></li>
     <li><a href="#adopt-flow">自建 skill 送審</a></li>
+    <li><a href="#security">安全掃描</a></li>
     <li><a href="#tiers">升級與退場</a></li>
     <li><a href="#eval">Eval 與 ablation</a></li>
     <li><a href="#telemetry">使用量與回報</a></li>
@@ -161,7 +162,7 @@ footer{margin-top:64px;padding-top:24px;border-top:1px solid var(--line);font-si
   <div class="quick">
     <div><small>需求</small><p>Python 3.9 以上，不需安裝套件。eval 需要 <code>claude</code> CLI。</p></div>
     <div><small>下載</small><p>專案檔案庫中的 <code>skill-hub-framework/skill-hub.zip</code></p></div>
-    <div><small>已驗證</small><p>init、sync、lint、hook、stats、真實 eval 都實際跑過。</p></div>
+    <div><small>已驗證</small><p>init、sync、lint、hook、stats、scan（兩種掃描器）、真實 eval 都實際跑過。</p></div>
   </div>
 </header>
 
@@ -442,7 +443,7 @@ skillctl eval api-review</pre></div>
     </div></li>
     <li><div>
       <h3>審核</h3>
-      <p>hub 的 CI 跑 lint。PR 只動到 <code>skills/domain/</code> 時，lint 通過就自動合併；只要碰到 core、always-on 或工具程式，就一定要人審。PR 描述會列出待補的 spec 和 eval。</p>
+      <p>送出前 adopt 會先做<a href="#security">安全掃描</a>，被擋的不送。hub 的 CI 跑 lint 和安全掃描，PR 只動到 <code>skills/domain/</code> 時，全部通過就自動合併；只要碰到 core、always-on 或工具程式，就一定要人審。PR 描述會列出待補的 spec 和 eval。</p>
     </div></li>
     <li><div>
       <h3>接手</h3>
@@ -461,8 +462,54 @@ skillctl eval api-review</pre></div>
   <p>名稱和 hub 既有 skill 或 superpowers 的 skill 重複時，adopt 會拒絕並提示改名。已收編過的 skill 若在專案內又改了，用 <code>skillctl adopt &lt;name&gt; --again</code> 送更新。</p>
 </section>
 
+<section id="security">
+  <h2><span class="n">09</span>安全掃描</h2>
+  <p>skill 就是會被 agent 執行的指令和腳本，從別的專案收進來、或安裝第三方工具時，都可能夾帶惡意內容。hub 在四個地方掃描：</p>
+  <div class="tbl"><table>
+    <thead><tr><th>時機</th><th>在哪跑</th><th>結果</th></tr></thead>
+    <tbody>
+      <tr><td><code>skillctl adopt</code> 送審前</td><td>本機</td><td>被擋的 skill 不送 PR</td></tr>
+      <tr><td><code>skillctl tools --run</code> 安裝前</td><td>本機</td><td>被擋的工具不安裝</td></tr>
+      <tr><td>每個改到 <code>skills/</code> 的 PR</td><td>CI <code>security</code> job</td><td>會擋，也是自動合併的條件</td></tr>
+      <tr><td><code>adopt/</code> 自動合併 PR（選用）</td><td>CI <code>llm-judge</code> job</td><td>HIGH 以上就不自動合併</td></tr>
+    </tbody>
+  </table></div>
+  <p><code>skillctl doctor</code> 會列出每個外部工具和 plugin 最近一次的掃描結果，沒掃過的會提醒。</p>
+
+  <h3>兩個掃描器，一次用一個</h3>
+  <p>在 hub 的 <code>skillhub.json</code> 設 <code>security.scanner</code>。本機 <code>skillctl scan</code> 和 CI 的 <code>security</code> job 都跟著它。兩者的結果統一成同一種格式，存進 <code>security/scan-results.json</code>。</p>
+  <div class="tbl"><table>
+    <thead><tr><th></th><th>NVIDIA SkillSpector（預設）</th><th>Cisco skill-scanner</th></tr></thead>
+    <tbody>
+      <tr><td>設定值</td><td><code>"skillspector"</code></td><td><code>"cisco"</code></td></tr>
+      <tr><td>判斷方式</td><td>0–100 風險分數，加上 SAFE / CAUTION / DO_NOT_INSTALL</td><td>最高嚴重度（INFO 到 CRITICAL），可選政策預設</td></tr>
+      <tr><td>擋下門檻</td><td>分數 &gt; <code>max_score</code>（50）或 DO_NOT_INSTALL</td><td>嚴重度 ≥ <code>cisco.fail_on_severity</code>（high）</td></tr>
+      <tr><td>安裝</td><td><code>uv tool install --python 3.13 git+https://github.com/NVIDIA/skillspector.git</code></td><td><code>uv tool install cisco-ai-skill-scanner</code></td></tr>
+    </tbody>
+  </table></div>
+  <div class="pre"><pre>skillctl scan                     <span class="c"># 掃 hub 全部 skill</span>
+skillctl scan sql-style ./my-skill <span class="c"># skill 名稱或路徑</span>
+skillctl scan tool:archify         <span class="c"># 外部工具的 repo</span>
+skillctl scan bundle:docs-visual   <span class="c"># 組合包裡的 skill、工具、plugin</span>
+skillctl scan --scanner cisco x    <span class="c"># 這次改用另一個掃描器</span></pre></div>
+  <div class="note"><b>預設只做靜態分析：</b>不送資料給 LLM，也不需要 API key。加 <code>--llm</code>（或設 <code>"llm": true</code>）才會用 LLM 做語意分析，需要自己準備供應商的 key。</div>
+
+  <h3>誤判時接受風險</h3>
+  <p>靜態規則會誤判。例如 archify 的 <code>archify-pr</code>，SkillSpector 給 60 分（DO_NOT_INSTALL），Cisco 標成 CRITICAL <code>command_injection</code>，其實只是它本來就要執行 <code>gh</code> 和 git。讀過程式確認後：</p>
+  <div class="pre"><pre>skillctl scan --accept tool:archify --reason "呼叫 gh/git 是預期行為，已讀過 bin/archify-pr.mjs"</pre></div>
+  <p>理由、接受的人、日期、當時分數會寫進 <code>security/scan-results.json</code>，跟著 PR 讓人看到。分數改變或換掃描器後要重新接受。改到這個檔案的 PR 超出 <code>skills/domain/</code>，所以<b>一定要人審</b>，不會被自動合併。</p>
+
+  <h3>自動合併的第二層：Cisco + LLM 判讀</h3>
+  <p><code>adopt/</code> PR 沒人看就會合併，而 Cisco 公布的數據顯示，只靠靜態規則大約只抓到 8% 的惡意 skill，加上 LLM 判讀可以到 67% 左右。所以這種 PR 可以多跑一層 Cisco 的 GitHub Action。預設關閉，要開的話：</p>
+  <ol class="steps">
+    <li><div><h3>加 secret</h3><p>repo 的 <b>Settings → Secrets and variables → Actions</b> 新增 <code>SKILL_SCANNER_LLM_API_KEY</code>，填 LLM 供應商的 key。</p></div></li>
+    <li><div><h3>打開開關</h3><p>同一頁的 Variables 新增 <code>SKILL_SCANNER_LLM</code> = <code>true</code>。想換模型就加 <code>SKILL_SCANNER_LLM_MODEL</code>（預設 <code>anthropic/claude-sonnet-5-5</code>）。</p></div></li>
+  </ol>
+  <p>之後每個 <code>adopt/</code> PR 會多一個 <code>llm-judge</code> job，判到 HIGH 以上就不自動合併，留給人審。一般 PR 不跑這層，避免兩個掃描器重複擋同一件事。</p>
+</section>
+
 <section id="tiers">
-  <h2><span class="n">09</span>升級與退場</h2>
+  <h2><span class="n">10</span>升級與退場</h2>
   <p>skill 放在哪個資料夾就是哪一級。新 skill 一律從 <span class="pill p-domain">domain</span> 開始，證明自己有用之後再往上升。升級和降級都用指令完成，指令會搬資料夾、改 <code>tier</code>、升版號、寫 CHANGELOG，你只要 commit 並開 PR。</p>
   <div class="pre"><pre>$ skillctl promote api-review --dry-run
 api-review：domain → core
@@ -497,14 +544,14 @@ skillctl demote api-review --to domain         <span class="c"># 降一層</span
     <tbody>
       <tr><td>Require a pull request，approvals 設 1</td><td>所有改動都要經過 PR 和 1 人 review</td></tr>
       <tr><td>Require review from Code Owners</td><td><code>core/</code>、<code>always-on/</code>、<code>tools/</code> 一定要負責人審過</td></tr>
-      <tr><td>Require status checks：<code>lint</code></td><td>CI 沒過不能合併</td></tr>
+      <tr><td>Require status checks：<code>lint</code>、<code>security</code></td><td>CI 沒過不能合併</td></tr>
     </tbody>
   </table></div>
   <div class="note"><b>只有你一個人時：</b>GitHub 不允許核准自己的 PR，前兩項會讓你無法合併。這時先只開第三項，等有協作者再開前兩項。</div>
 </section>
 
 <section id="eval">
-  <h2><span class="n">10</span>Eval 與 ablation</h2>
+  <h2><span class="n">11</span>Eval 與 ablation</h2>
   <p><code>skillctl eval</code> 會為每個案例建一個乾淨的暫存專案，只裝這個 skill 和 always-on 層，用 <code>claude -p</code> 執行，再檢查 skill 有沒有被觸發、輸出是否符合條件。預設只給 agent 唯讀工具，需要更多用 <code>--allow-tools</code>。</p>
   <h3>案例格式</h3>
   <div class="pre"><pre>{<span class="k">"type"</span>: <span class="s">"golden"</span>, <span class="k">"prompt"</span>: <span class="s">"我 stage 好了，幫我寫 commit message"</span>,
@@ -531,7 +578,7 @@ skillctl demote api-review --to domain         <span class="c"># 降一層</span
 </section>
 
 <section id="telemetry">
-  <h2><span class="n">11</span>使用量與回報</h2>
+  <h2><span class="n">12</span>使用量與回報</h2>
   <h3>Hook 記錄什麼</h3>
   <p><code>init</code> 註冊兩個 hook：agent 呼叫 Skill 工具時（PostToolUse），以及你手動輸入 <code>/skill-name</code> 時（UserPromptSubmit，只取指令名稱）。每筆寫一行到 <code>~/.skillhub/usage.jsonl</code>：</p>
   <div class="pre"><pre>{<span class="k">"ts"</span>: <span class="s">"2026-11-24T14:16:23+00:00"</span>, <span class="k">"skill"</span>: <span class="s">"commit-message"</span>, <span class="k">"version"</span>: <span class="s">"1.1.0"</span>,
@@ -554,7 +601,7 @@ skillctl papercut commit-message --to-eval   <span class="c"># 全部轉成 real
 </section>
 
 <section id="cli">
-  <h2><span class="n">12</span>指令速查</h2>
+  <h2><span class="n">13</span>指令速查</h2>
   <div class="tbl"><table>
     <thead><tr><th>指令</th><th>用途</th></tr></thead>
     <tbody>
@@ -562,7 +609,8 @@ skillctl papercut commit-message --to-eval   <span class="c"># 全部轉成 real
       <tr><td><code>sync [--dry-run]</code></td><td>依四層設定安裝、更新、移除 skill，並啟用必裝 plugin</td></tr>
       <tr><td><code>adopt [name…] [--no-pr] [--again]</code></td><td>把專案內自建的 skill 送進 hub domain 層並開 PR</td></tr>
       <tr><td><code>tools [--run]</code></td><td>外部工具的狀態與各 agent 的安裝指令</td></tr>
-      <tr><td><code>doctor</code></td><td>檢查專案的 skill、hook、必裝 plugin 是否到位</td></tr>
+      <tr><td><code>doctor</code></td><td>檢查專案的 skill、hook、必裝 plugin、外部工具掃描結果</td></tr>
+      <tr><td><code>scan [目標…] [--llm] [--scanner] [--accept KEY --reason]</code></td><td>安全掃描 skill、路徑、<code>tool:</code>、<code>bundle:</code>；接受誤判</td></tr>
       <tr><td><code>install &lt;name|plugin:x&gt;</code></td><td>寫進 <code>.skillhub.json</code> 並同步</td></tr>
       <tr><td><code>find &lt;關鍵字&gt; [--json]</code></td><td>搜尋，依符合度、eval 分數、30 天用量排序</td></tr>
       <tr><td><code>list</code></td><td>列出全部 skill</td></tr>
@@ -579,7 +627,7 @@ skillctl papercut commit-message --to-eval   <span class="c"># 全部轉成 real
 </section>
 
 <section id="faq">
-  <h2><span class="n">13</span>常見問題</h2>
+  <h2><span class="n">14</span>常見問題</h2>
   <h3>copy 和 link 模式要選哪個？</h3>
   <p>團隊專案用 <code>copy</code>：skill 跟著專案進版控，隊友不需要 hub。自己同時開發 hub 和專案時，在 <code>.skillhub.local.json</code> 設 <code>"mode": "link"</code>，改 hub 立刻生效。</p>
   <h3>專案裡直接改了 skill 資料夾的檔案會怎樣？</h3>
@@ -590,6 +638,8 @@ skillctl papercut commit-message --to-eval   <span class="c"># 全部轉成 real
   <p>每個案例是一次 <code>claude -p</code> 呼叫，最多 8 回合；加 <code>--ablation</code> 會變兩倍。平常只對有改動的 skill 跑，<code>--dry-run</code> 只檢查格式、不呼叫模型。</p>
   <h3>為什麼 superpowers 不直接複製進 hub？</h3>
   <p>它是獨立維護、更新頻繁的 plugin。交給 Claude Code 的 plugin 機制安裝，就能跟著上游更新；hub 只負責規定「一定要裝」，並確保自己的 skill 不和它撞名。</p>
+  <h3>skillctl doctor 會檢查哪些東西？</h3>
+  <p>它檢查專案的設定：每個 skill 是否和 lock 檔一致、hook 有沒有註冊、必裝 plugin 有沒有開、同類工具是否開了兩個、有沒有還沒送審的自建 skill，以及外部工具和 plugin 的安全掃描結果。skill 內容本身的品質由 <code>lint</code> 和 <code>eval</code> 負責，安全性由 <code>scan</code> 負責。</p>
   <h3>手動輸入 /skill-name 會被記錄嗎？</h3>
   <p>會，hook 只取開頭的指令名稱，而且必須是專案裡已安裝的 skill 才記錄，後面的文字不會寫入。</p>
 </section>

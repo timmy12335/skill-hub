@@ -20,6 +20,7 @@
   skillctl papercut <name> "問題描述"          回報小問題（之後可轉成 eval case）
   skillctl compile <name> [--run]             由 spec.md 產生 SKILL.md 草稿
   skillctl adopt [name ...]                   把專案內自建的 skill 送進 hub domain 層並開 PR
+  skillctl scan [目標 ...] [--llm]             安全掃描（SkillSpector 或 Cisco；skill、路徑、tool:/plugin:/bundle:）
   skillctl tools [--run]                      外部工具（graphify、archify…）的狀態與安裝指令
   skillctl doctor [--project DIR]              檢查專案狀態（skill、hook、必裝 plugin）
   skillctl promote <name> [--to core|always-on] [--dry-run]   檢查條件並升級
@@ -444,7 +445,14 @@ def cmd_tools(a):
             print(f"    ! {tl['warning']}")
         if tl.get("usage"):
             print(f"    用法：{tl['usage']}")
+        res = read_json(SCAN_RESULTS).get(f"tool:{tl['id']}")
+        if res:
+            acc = " 已接受" if res.get("accepted") else ""
+            print(f"    安全掃描：{res.get('score')}/100 {res.get('recommendation')}{acc}（{res.get('scanned_at', '')[:10]}）")
         if ok and not a.run:
+            continue
+        if a.run and not ok and not scan_gate(f"tool:{tl['id']}", tl["homepage"], recursive=True):
+            print(f"    ✗ 安全掃描未通過，不安裝。確認誤判後：skillctl scan --accept tool:{tl['id']} --reason …")
             continue
         for kind, c in tool_commands(tl, agents):
             print(f"    {kind:<8} {c}")
@@ -1260,6 +1268,9 @@ def cmd_adopt(a):
         if n in existing and not a.again:
             print(f"✗ {n}：hub 已有同名 skill（{existing[n]['tier']}），請改名或用 --again 送更新")
             continue
+        if not scan_gate(f"skill:{n}", str(src)):
+            print(f"✗ {n}：安全掃描未通過，沒有送審。看過結果後可用 skillctl scan --accept skill:{n} --reason … 再送")
+            continue
         normalize_skill_md(src, n, owner)  # 專案內版本也補齊，合併後 sync 才認得是同一份
         if a.no_pr:
             dest = HUB_ROOT / "skills" / "domain" / n
@@ -1319,6 +1330,255 @@ def _adopt_pr(src: Path, name: str, project: Path) -> str:
         return url
     finally:
         run(["git", "worktree", "remove", "--force", str(wt)], HUB_ROOT, check=False)
+
+
+# ---------------------------------------------------------------- scan：NVIDIA SkillSpector 或 Cisco skill-scanner
+SCAN_RESULTS = HUB_ROOT / "security" / "scan-results.json"
+
+
+SCANNERS = {"skillspector": "skillspector", "cisco": "skill-scanner"}
+SEV_SCORE = {"SAFE": 0, "INFO": 0, "LOW": 20, "MEDIUM": 40, "HIGH": 70, "CRITICAL": 90}
+SEV_ORDER = ["INFO", "LOW", "MEDIUM", "HIGH", "CRITICAL"]
+
+
+def install_hint(sc: dict) -> str:
+    return sc["cisco"]["install"] if sc["scanner"] == "cisco" else sc["install"]
+
+
+def sec_cfg() -> dict:
+    d = {"scanner": "skillspector", "max_score": 50, "block": ["DO_NOT_INSTALL"], "llm": False,
+         "baseline": ".skillspector-baseline.yaml",
+         "install": "uv tool install --python 3.13 git+https://github.com/NVIDIA/skillspector.git",
+         "cisco": {"install": "uv tool install cisco-ai-skill-scanner", "policy": "low-noise",
+                   "fail_on_severity": "high"}}
+    user = read_json(HUB_ROOT / "skillhub.json").get("security", {})
+    d.update({k: v for k, v in user.items() if k != "cisco"})
+    d["cisco"].update(user.get("cisco", {}))
+    if os.environ.get("SKILLHUB_SCANNER"):
+        d["scanner"] = os.environ["SKILLHUB_SCANNER"]
+    if d["scanner"] not in SCANNERS:
+        die(f"security.scanner 只能是 {' / '.join(SCANNERS)}，目前是 {d['scanner']}")
+    return d
+
+
+def _local_target(target: str, tmp: Path) -> str:
+    """遠端 repo 先淺層 clone 到暫存資料夾再掃（GitHub 的 /tree/<branch>/<子目錄> 也支援）。"""
+    if not re.match(r"^(https?://|git@)", target):
+        return target
+    m = re.match(r"^(https://github\.com/[^/]+/[^/]+)/tree/([^/]+)/?(.*)$", target)
+    repo, branch, sub = (m.group(1), m.group(2), m.group(3)) if m else (target, None, "")
+    dest = tmp / "src"
+    cmd = ["git", "clone", "-q", "--depth", "1"] + (["--branch", branch] if branch else []) + [repo, str(dest)]
+    r = subprocess.run(cmd, capture_output=True, text=True, timeout=300)
+    if r.returncode:
+        raise RuntimeError(f"clone 失敗：{r.stderr.strip()[-200:]}")
+    return str(dest / sub) if sub else str(dest)
+
+
+def _skills_root(local: str) -> str:
+    """SkillSpector 的 --recursive 只看下一層；找出直接子資料夾含最多 SKILL.md 的那一層。"""
+    best, n_best = local, 0
+    for d, dirs, _ in os.walk(local):
+        dirs[:] = [x for x in dirs if not x.startswith(".") and x != "node_modules"]
+        if Path(d).relative_to(local).parts.__len__() > 4:
+            dirs[:] = []
+            continue
+        n = sum(1 for x in dirs if (Path(d) / x / "SKILL.md").exists())
+        if n > n_best:
+            best, n_best = d, n
+    return best
+
+
+def _run_cisco(exe: str, target: str, sc: dict, llm: bool, recursive: bool) -> dict:
+    cc = sc["cisco"]
+    with tempfile.TemporaryDirectory() as td:
+        try:
+            local = _local_target(target, Path(td))
+        except RuntimeError as e:
+            return {"error": str(e), "blocked": True}
+        multi = recursive or not (Path(local) / "SKILL.md").exists()
+        cmd = [exe, "scan-all" if multi else "scan", local, "--format", "json", "--policy", cc["policy"], "--lenient"]
+        if multi:
+            cmd.append("--recursive")
+        if llm:
+            cmd.append("--use-llm")
+        r = subprocess.run(cmd, capture_output=True, text=True, timeout=900)
+    try:
+        d = json.loads(r.stdout)
+    except json.JSONDecodeError:
+        return {"error": (r.stderr or r.stdout).strip()[-300:] or f"exit {r.returncode}", "blocked": True}
+    results = d.get("results", [d]) if multi else [d]
+    findings = [f for res in results for f in res.get("findings", [])]
+    sevs = [str(f.get("severity", "INFO")).upper() for f in findings]
+    top = max(sevs, key=lambda x: SEV_ORDER.index(x) if x in SEV_ORDER else 0, default="SAFE")
+    fail = SEV_ORDER.index(cc["fail_on_severity"].upper())
+    hit = any(SEV_ORDER.index(x) >= fail for x in sevs if x in SEV_ORDER)
+    rec = "DO_NOT_INSTALL" if hit else ("CAUTION" if top == "MEDIUM" else "SAFE")
+    issues = [{"category": f.get("category"), "severity": f.get("severity"), "file": f.get("file_path"),
+               "line": f.get("line_number")} for f in findings if str(f.get("severity")).upper() != "INFO"]
+    issues.sort(key=lambda i: -SEV_ORDER.index(str(i["severity"]).upper()) if str(i["severity"]).upper() in SEV_ORDER else 0)
+    return {"score": SEV_SCORE.get(top, 0), "severity": top, "recommendation": rec, "issues": issues,
+            "complete": True, "version": f"cisco {cc['policy']}", "blocked": rec in sc["block"]}
+
+
+def run_scan(target: str, llm: bool | None = None, recursive: bool = False) -> dict | None:
+    """回傳 {score, severity, recommendation, issues:[…], blocked}；沒裝掃描器回傳 None。
+    兩種後端（security.scanner）輸出統一成同一格式：skillspector（預設）或 cisco。"""
+    sc = sec_cfg()
+    exe = shutil.which(SCANNERS[sc["scanner"]])
+    if not exe:
+        return None
+    use_llm = sc["llm"] if llm is None else llm
+    if sc["scanner"] == "cisco":
+        return _run_cisco(exe, target, sc, use_llm, recursive)
+    with tempfile.TemporaryDirectory() as td:
+        try:
+            local = _local_target(target, Path(td))
+        except RuntimeError as e:
+            return {"error": str(e), "blocked": True}
+        multi = recursive and not (Path(local) / "SKILL.md").exists()
+        if multi:
+            local = _skills_root(local)
+        cmd = [exe, "scan", local, "--format", "json"]
+        if not use_llm:
+            cmd.append("--no-llm")
+        if multi:
+            cmd += ["--recursive", "--max-skills", "50"]
+        bl = HUB_ROOT / sc["baseline"]
+        if bl.exists():
+            cmd += ["--baseline", str(bl)]
+        r = subprocess.run(cmd, capture_output=True, text=True, timeout=900)
+    try:
+        d = json.loads(r.stdout)
+    except json.JSONDecodeError:
+        return {"error": (r.stderr or r.stdout).strip()[-300:] or f"exit {r.returncode}", "blocked": True}
+    if d.get("multi_skill"):  # --recursive：每個子 skill 各自一份結果，取最高分
+        ra = {"score": d.get("max_risk_score", 0), "severity": d.get("risk_severity"),
+              "recommendation": d.get("risk_recommendation")}
+        raw = [(sk.get("name", "") + "/", i) for sk in d.get("skills", []) for i in sk.get("issues", [])]
+    else:
+        ra = d.get("risk_assessment", {})
+        raw = [("", i) for i in d.get("issues", [])]
+    issues = [{"category": i.get("category"), "severity": i.get("severity"),
+               "file": pre + str((i.get("location") or {}).get("file") or ""), "line": (i.get("location") or {}).get("start_line")}
+              for pre, i in raw]
+    issues.sort(key=lambda i: -SEV_ORDER.index(str(i["severity"]).upper()) if str(i["severity"]).upper() in SEV_ORDER else 0)
+    score = ra.get("score", 0)
+    return {"score": score, "severity": ra.get("severity"), "recommendation": ra.get("recommendation"),
+            "issues": issues, "complete": (d.get("analysis_completeness") or {}).get("is_complete"),
+            "version": (d.get("metadata") or {}).get("skillspector_version"),
+            "blocked": score > sc["max_score"] or ra.get("recommendation") in sc["block"]}
+
+
+def scan_target(spec: str) -> list:
+    """把 skill 名稱 / 路徑 / URL / tool:<id> / bundle:<名稱> 轉成 [(結果 key, 掃描目標, 是否遞迴)]。"""
+    if spec.startswith("bundle:"):
+        b = read_json(HUB_ROOT / "plugins" / f"{spec[7:]}.json")
+        if not b:
+            die(f"找不到組合包：{spec[7:]}")
+        out = [(f"skill:{n}", str(all_skills()[n]["path"]), False) for n in b.get("skills", []) if n in all_skills()]
+        out += [(f"tool:{tl['id']}", tl["homepage"], True) for tl in b.get("tools", []) if tl.get("homepage")]
+        for ap in b.get("agent_plugins", []):
+            if isinstance(ap, dict) and ap.get("homepage"):
+                out.append((f"plugin:{ap['id']}", ap["homepage"], True))
+        return out
+    if spec.startswith("tool:"):
+        for b in all_bundles().values():
+            for tl in b.get("tools", []):
+                if tl["id"] == spec[5:]:
+                    return [(spec, tl["homepage"], True)]
+        die(f"找不到工具：{spec[5:]}")
+    if spec.startswith("plugin:"):
+        pid = spec[7:]
+        aps = list(read_json(HUB_ROOT / "skillhub.json").get("agent_plugins", []))
+        aps += [ap for b in all_bundles().values() for ap in b.get("agent_plugins", [])]
+        for ap in aps:
+            if isinstance(ap, dict) and ap.get("id") == pid and ap.get("homepage"):
+                return [(spec, ap["homepage"], True)]
+        die(f"找不到 plugin 或它沒有 homepage：{pid}")
+    if spec in all_skills():
+        return [(f"skill:{spec}", str(all_skills()[spec]["path"]), False)]
+    return [(f"path:{spec}", spec, not spec.endswith("SKILL.md"))]
+
+
+def _rel(target: str) -> str:
+    try:
+        return str(Path(target).resolve().relative_to(HUB_ROOT))
+    except (ValueError, OSError):
+        return target
+
+
+def save_scan(key: str, target: str, res: dict):
+    data = read_json(SCAN_RESULTS)
+    prev = data.get(key, {})
+    scanner = sec_cfg()["scanner"]
+    same = prev.get("score") == res.get("score") and prev.get("scanner", "skillspector") == scanner
+    data[key] = {**{k: res.get(k) for k in ("score", "severity", "recommendation", "blocked", "complete", "version", "error")},
+                 "scanner": scanner,
+                 "target": _rel(target), "issues": res.get("issues", [])[:20],
+                 "scanned_at": dt.datetime.now(dt.timezone.utc).isoformat(timespec="seconds"),
+                 "accepted": prev.get("accepted") if same else None}
+    write_json(SCAN_RESULTS, data)
+
+
+def print_scan(key: str, res: dict):
+    if res.get("error"):
+        print(f"✗ {key}：掃描失敗（{res['error']}）")
+        return
+    mark = "✗" if res["blocked"] else ("!" if res["recommendation"] == "CAUTION" else "✓")
+    print(f"{mark} {key}：風險 {res['score']}/100（{res['severity']}，{res['recommendation']}），{len(res['issues'])} 個發現")
+    for i in res["issues"][:8]:
+        print(f"    - [{i['severity']}] {i['category']}  {i['file'] or ''}{':' + str(i['line']) if i['line'] else ''}")
+
+
+def cmd_scan(a):
+    if a.scanner:
+        os.environ["SKILLHUB_SCANNER"] = a.scanner
+    sc = sec_cfg()
+    if a.accept:
+        data = read_json(SCAN_RESULTS)
+        if a.accept not in data:
+            die(f"{a.accept} 沒有掃描紀錄，先執行 skillctl scan")
+        if not a.reason:
+            die("接受風險請用 --reason 說明理由（會寫進 security/scan-results.json，PR 審查看得到）")
+        data[a.accept]["accepted"] = {"reason": a.reason, "by": git_owner(), "score": data[a.accept].get("score"),
+                                      "at": dt.date.today().isoformat()}
+        write_json(SCAN_RESULTS, data)
+        print(f"✓ 已接受 {a.accept} 的掃描結果：{a.reason}（分數改變後需重新接受）")
+        return
+    if not shutil.which(SCANNERS[sc["scanner"]]):
+        die(f"找不到 {SCANNERS[sc['scanner']]}。安裝：{install_hint(sc)}")
+    targets = []
+    for spec in a.targets or [f"skill:{n}" for n in all_skills()]:
+        targets += scan_target(spec.replace("skill:", "", 1) if spec.startswith("skill:") else spec)
+    blocked = 0
+    for key, target, rec in targets:
+        res = run_scan(target, llm=a.llm or None, recursive=rec)
+        print_scan(key, res)
+        save_scan(key, target, res)
+        acc = read_json(SCAN_RESULTS).get(key, {}).get("accepted")
+        if res.get("blocked") and not acc:
+            blocked += 1
+    if blocked:
+        limit = (f"嚴重度 ≥ {sc['cisco']['fail_on_severity'].upper()}" if sc["scanner"] == "cisco"
+                 else f"分數 > {sc['max_score']} 或 {'/'.join(sc['block'])}")
+        print(f"\n{blocked} 個目標超過門檻（{limit}）。確認是誤判可用：skillctl scan --accept <key> --reason \"…\"")
+    sys.exit(1 if blocked else 0)
+
+
+def scan_gate(key: str, target: str, recursive: bool = False, quiet: bool = False) -> bool:
+    """安裝或送審前的關卡：沒裝掃描器時放行（CI 會再擋），被擋且未接受時回傳 False。"""
+    res = run_scan(target, recursive=recursive)
+    if res is None:
+        if not quiet:
+            sc = sec_cfg()
+            print(f"! 沒有安裝 {SCANNERS[sc['scanner']]}，略過 {key} 的安全掃描（{install_hint(sc)}）")
+        return True
+    save_scan(key, target, res)
+    if not quiet:
+        print_scan(key, res)
+    acc = read_json(SCAN_RESULTS).get(key, {}).get("accepted")
+    return not res.get("blocked") or bool(acc)
 
 
 # ---------------------------------------------------------------- doctor
@@ -1386,6 +1646,17 @@ def cmd_doctor(a):
             print(f"注意：{tl['id']} 是非商業授權（{tl['license']}），商業專案請移除組合包 {tl['bundle']}")
     for g, members in group_conflicts(cfg, project).items():
         checks.append((False, f"{g} 類工具只開一個（目前 {', '.join(members)}）"))
+    scans = read_json(SCAN_RESULTS)
+    ext_keys = [f"tool:{tl['id']}" for tl in active_tools(cfg)]
+    ext_keys += [f"plugin:{ap['id']}" for ap in wanted_agent_plugins(cfg) if ap.get("homepage")]
+    for k in ext_keys:
+        r = scans.get(k)
+        if not r:
+            checks.append((False, f"{k} 已做安全掃描（尚未掃描：skillctl scan {k}）"))
+        else:
+            ok = not r.get("blocked") or bool(r.get("accepted"))
+            note = "，已接受風險：" + r["accepted"]["reason"] if r.get("blocked") and r.get("accepted") else ""
+            checks.append((ok, f"{k} 安全掃描 {r.get('score')}/100 {r.get('recommendation')}{note}"))
     if active_tools(cfg) and any(not ok for ok, m in checks if "外部工具" in m or "的 skill 已裝" in m):
         print("提示：skillctl tools 會列出缺少的安裝指令")
     for ok, msg in checks:
@@ -1458,6 +1729,14 @@ def main(argv=None):
     x.add_argument("name")
     x.add_argument("--run", action="store_true")
     x.set_defaults(fn=cmd_compile)
+
+    x = sub.add_parser("scan", help="安全掃描（security.scanner：skillspector / cisco）")
+    x.add_argument("targets", nargs="*", help="skill 名稱、路徑、URL、tool:<id>、plugin:<id>、bundle:<名稱>；不填 = hub 全部 skill")
+    x.add_argument("--llm", action="store_true", help="加上 LLM 語意分析（預設只做本機靜態分析）")
+    x.add_argument("--accept", metavar="KEY", help="接受某個目標的目前掃描結果（例如 tool:archify）")
+    x.add_argument("--reason", help="接受的理由")
+    x.add_argument("--scanner", choices=["skillspector", "cisco"], help="這次改用哪個掃描器（預設看 skillhub.json security.scanner）")
+    x.set_defaults(fn=cmd_scan)
 
     x = sub.add_parser("tools", help="列出組合包需要的外部工具與安裝指令")
     x.add_argument("--project", default=".")
