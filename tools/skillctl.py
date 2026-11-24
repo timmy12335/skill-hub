@@ -20,6 +20,7 @@
   skillctl papercut <name> "問題描述"          回報小問題（之後可轉成 eval case）
   skillctl compile <name> [--run]             由 spec.md 產生 SKILL.md 草稿
   skillctl adopt [name ...]                   把專案內自建的 skill 送進 hub domain 層並開 PR
+  skillctl tools [--run]                      外部工具（graphify、archify…）的狀態與安裝指令
   skillctl doctor [--project DIR]              檢查專案狀態（skill、hook、必裝 plugin）
   skillctl promote <name> [--to core|always-on] [--dry-run]   檢查條件並升級
   skillctl demote <name> [--to ...] [--status deprecated|retired]
@@ -254,6 +255,10 @@ def cmd_lint(a):
         for m in msgs:
             print(f"    {m}")
     for pf in sorted((HUB_ROOT / "plugins").glob("*.json")):
+        for ext in read_json(pf).get("extends", []):
+            if not (HUB_ROOT / "plugins" / f"{ext}.json").exists():
+                print(f"✗ plugins/{pf.name} extends 不存在的組合包：{ext}")
+                n_err += 1
         for ap in read_json(pf).get("agent_plugins", []):
             aid = ap if isinstance(ap, str) else ap.get("id", "")
             if "@" not in aid:
@@ -342,10 +347,120 @@ def layered_config(project: Path) -> dict:
     return cfg
 
 
+def bundle_names(cfg: dict) -> list:
+    """專案選的組合包，加上它們 extends 的組合包（去重、防循環）。"""
+    out, todo = [], list(cfg["plugins"])
+    while todo:
+        b = todo.pop(0)
+        if b in out:
+            continue
+        pf = HUB_ROOT / "plugins" / f"{b}.json"
+        if not pf.exists():
+            die(f"找不到組合包：{b}（plugins/{b}.json）")
+        out.append(b)
+        todo += read_json(pf).get("extends", [])
+    return out
+
+
+def all_bundles() -> dict:
+    return {pf.stem: read_json(pf) for pf in sorted((HUB_ROOT / "plugins").glob("*.json"))}
+
+
+def active_tools(cfg: dict) -> list:
+    """選用組合包帶進來的外部工具（自己有安裝程式、會自己把 skill 裝到 agent 資料夾的那種）。"""
+    out, seen = [], set()
+    for b in bundle_names(cfg):
+        for tl in read_json(HUB_ROOT / "plugins" / f"{b}.json").get("tools", []):
+            if tl["id"] not in seen:
+                seen.add(tl["id"])
+                out.append(dict(tl, bundle=b))
+    return out
+
+
+def external_skill_names() -> set:
+    """所有組合包裡的外部工具會安裝的 skill 名稱：這些不是自建 skill，不送 adopt。"""
+    names = set()
+    for b in all_bundles().values():
+        for tl in b.get("tools", []):
+            names |= set(tl.get("skills", []))
+    for group in read_json(HUB_ROOT / "skillhub.json").get("known_tool_groups", {}).values():
+        names |= set(group)
+    return names
+
+
+USER_SKILL_DIRS = ("~/.claude/skills", "~/.agents/skills", "~/.cursor/skills", "~/.codex/skills")
+
+
+def skill_present(project: Path, name: str) -> bool:
+    dirs = [project / d for d in SKILL_DIRS] + [Path(os.path.expanduser(d)) for d in USER_SKILL_DIRS]
+    return any((d / name).exists() for d in dirs)
+
+
+def tool_status(tl: dict, project: Path, agents) -> dict:
+    cli_ok = True if not tl.get("check") else bool(shutil.which(tl["check"]))
+    skills = tl.get("skills", [])
+    skill_ok = not skills or skill_present(project, skills[0])
+    return {"cli": cli_ok, "skill": skill_ok}
+
+
+def group_conflicts(cfg: dict, project: Path) -> dict:
+    """同一類工具（例如 code-graph）同時開了不只一個。"""
+    groups = {}
+    for tl in active_tools(cfg):
+        if tl.get("group"):
+            groups.setdefault(tl["group"], set()).add(tl["id"])
+    for g, members in read_json(HUB_ROOT / "skillhub.json").get("known_tool_groups", {}).items():
+        for m in members:
+            if skill_present(project, m):
+                groups.setdefault(g, set()).add(m)
+    return {g: sorted(m) for g, m in groups.items() if len(m) > 1}
+
+
+def tool_commands(tl: dict, agents) -> list:
+    ins = tl.get("install", {})
+    cmds = []
+    if ins.get("cli") and tl.get("check") and not shutil.which(tl["check"]):
+        cmds.append(("cli", ins["cli"]))
+    if ins.get("project"):
+        cmds.append(("project", ins["project"]))
+    cmds += [(a, ins[a]) for a in agents if a in ins]
+    return cmds
+
+
+def cmd_tools(a):
+    project = Path(a.project).resolve()
+    cfg = layered_config(project)
+    agents = cfg["agents"]
+    tools = active_tools(cfg)
+    if not tools:
+        print("這個專案選的組合包沒有外部工具。可用的：" + "、".join(
+            f"{n}（{', '.join(x['id'] for x in b.get('tools', []))}）" for n, b in all_bundles().items() if b.get("tools")))
+        return
+    for tl in tools:
+        st = tool_status(tl, project, agents)
+        ok = st["cli"] and st["skill"]
+        print(f"{'✓' if ok else '○'} {tl['id']}（組合包 {tl['bundle']}，{tl.get('license', '?')}）  {tl.get('homepage', '')}")
+        if tl.get("warning"):
+            print(f"    ! {tl['warning']}")
+        if tl.get("usage"):
+            print(f"    用法：{tl['usage']}")
+        if ok and not a.run:
+            continue
+        for kind, c in tool_commands(tl, agents):
+            print(f"    {kind:<8} {c}")
+            if a.run:
+                r = subprocess.run(c.split("（")[0], shell=True, cwd=project)
+                print(f"    {'✓' if r.returncode == 0 else '✗'} 結束碼 {r.returncode}")
+    for g, members in group_conflicts(cfg, project).items():
+        print(f"! {g} 類工具同時有 {', '.join(members)}，功能重疊，建議只留一個")
+    if not a.run:
+        print("\n要我直接執行上面的安裝指令：skillctl tools --run（會執行第三方安裝程式，請先確認來源）")
+
+
 def bundle_agent_plugins(cfg: dict) -> list:
     """組合包（plugins/<名稱>.json）也可以帶外部 agent plugin，選了組合包才會啟用，屬於選用。"""
     out = []
-    for pl in cfg["plugins"]:
+    for pl in bundle_names(cfg):
         for ap in read_json(HUB_ROOT / "plugins" / f"{pl}.json").get("agent_plugins", []):
             ap = {"id": ap} if isinstance(ap, str) else dict(ap)
             ap["required"] = False
@@ -420,6 +535,10 @@ def reserved_names() -> dict:
         if isinstance(ap, dict):
             for n in ap.get("provides", []):
                 out.setdefault(n, ap["id"])
+    for b in all_bundles().values():
+        for tl in b.get("tools", []):
+            for n in tl.get("skills", []):
+                out.setdefault(n, tl["id"])
     return out
 
 
@@ -430,10 +549,8 @@ def resolve_wanted(cfg: dict) -> dict:
         for s in skills.values():
             if s["tier"] == "always-on":
                 wanted[s["name"]] = "always-on"
-    for pl in cfg["plugins"]:
+    for pl in bundle_names(cfg):
         pf = HUB_ROOT / "plugins" / f"{pl}.json"
-        if not pf.exists():
-            die(f"找不到 plugin：{pl}（plugins/{pl}.json）")
         for n in read_json(pf).get("skills", []):
             wanted.setdefault(n, f"plugin:{pl}")
     for n in cfg["include"]:
@@ -563,7 +680,8 @@ def cmd_sync(a):
                 uninstall_one(n, project)
     if not a.dry_run:
         write_json(lock_p, {"hub": str(HUB_ROOT), "synced_at": dt.datetime.now(dt.timezone.utc).isoformat(timespec="seconds"),
-                            "agents": agents, "layout": main_dir, "skills": new_lock})
+                            "agents": agents, "layout": main_dir, "skills": new_lock,
+                            "external_skills": sorted(external_skill_names())})
         # 舊版 lock 位置
         old = project / ".claude" / "skills.lock.json"
         if old.exists():
@@ -579,6 +697,11 @@ def cmd_sync(a):
         print(f"… 審核中，暫用專案內版本：{', '.join(pend)}")
     if un:
         print(f"! 專案內有 {len(un)} 個 hub 還沒有的 skill：{', '.join(un)}。執行 skillctl adopt 送進 hub 審核")
+    missing_tools = [tl["id"] for tl in active_tools(cfg) if not all(tool_status(tl, project, agents).values())]
+    if missing_tools:
+        print(f"! 組合包需要的外部工具尚未安裝：{', '.join(missing_tools)}。執行 skillctl tools 查看安裝指令")
+    for g, members in group_conflicts(cfg, project).items():
+        print(f"! {g} 類工具同時有 {', '.join(members)}，建議只留一個")
     if not a.dry_run:
         register_hooks(project, agents, cfg)
     _, links = layout(agents)
@@ -1063,11 +1186,13 @@ def unmanaged_skills(project: Path, lock: dict | None = None) -> list:
     if lock is None:
         lock = read_json(project / LOCK_REL).get("skills", {})
     names = set()
+    ext = external_skill_names()
     for rel in SKILL_DIRS:
         d = project / rel
         if d.is_dir():
             names |= {p.name for p in d.iterdir()
-                      if p.is_dir() and not p.is_symlink() and (p / "SKILL.md").exists() and p.name not in lock}
+                      if p.is_dir() and not p.is_symlink() and (p / "SKILL.md").exists()
+                      and p.name not in lock and p.name not in ext and not p.name.startswith("gitnexus")}
     return sorted(names)
 
 
@@ -1251,6 +1376,18 @@ def cmd_doctor(a):
         router = next((ap.get("router") for ap in aps_all if ap["id"] == a_id), None)
         ok = bool(router) and (project / main_dir / router).exists()
         checks.append((ok, f"{a_id.split('@')[0]} 與 {b_id.split('@')[0]} 的重疊（{why}）已由 {router or '路由 skill'} 分工"))
+    for tl in active_tools(cfg):
+        stt = tool_status(tl, project, agents)
+        if tl.get("check"):
+            checks.append((stt["cli"], f"外部工具 {tl['id']} 已安裝（指令 {tl['check']}）"))
+        if tl.get("skills"):
+            checks.append((stt["skill"], f"{tl['id']} 的 skill 已裝到 agent（{tl['skills'][0]}）"))
+        if tl.get("noncommercial"):
+            print(f"注意：{tl['id']} 是非商業授權（{tl['license']}），商業專案請移除組合包 {tl['bundle']}")
+    for g, members in group_conflicts(cfg, project).items():
+        checks.append((False, f"{g} 類工具只開一個（目前 {', '.join(members)}）"))
+    if active_tools(cfg) and any(not ok for ok, m in checks if "外部工具" in m or "的 skill 已裝" in m):
+        print("提示：skillctl tools 會列出缺少的安裝指令")
     for ok, msg in checks:
         print(f"{'✓' if ok else '✗'} {msg}")
     bad = sum(not ok for ok, _ in checks)
@@ -1321,6 +1458,11 @@ def main(argv=None):
     x.add_argument("name")
     x.add_argument("--run", action="store_true")
     x.set_defaults(fn=cmd_compile)
+
+    x = sub.add_parser("tools", help="列出組合包需要的外部工具與安裝指令")
+    x.add_argument("--project", default=".")
+    x.add_argument("--run", action="store_true", help="直接執行缺少的安裝指令")
+    x.set_defaults(fn=cmd_tools)
 
     x = sub.add_parser("adopt", help="把專案內自建的 skill 送進 hub 的 domain 層（開 PR）")
     x.add_argument("names", nargs="*", help="不填 = 所有尚未收編的自建 skill")

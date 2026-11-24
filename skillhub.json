@@ -9,14 +9,34 @@
       "id": "superpowers@superpowers-marketplace",
       "required": true,
       "homepage": "https://github.com/obra/superpowers",
-      "marketplace": {"name": "superpowers-marketplace", "repo": "obra/superpowers-marketplace"},
+      "marketplace": {
+        "name": "superpowers-marketplace",
+        "repo": "obra/superpowers-marketplace"
+      },
       "provides": [
-        "using-superpowers", "brainstorming", "writing-plans", "executing-plans",
-        "subagent-driven-development", "dispatching-parallel-agents", "test-driven-development",
-        "systematic-debugging", "verification-before-completion", "requesting-code-review",
-        "receiving-code-review", "using-git-worktrees", "finishing-a-development-branch",
-        "writing-skills", "diagnosing-superpowers"
+        "using-superpowers",
+        "brainstorming",
+        "writing-plans",
+        "executing-plans",
+        "subagent-driven-development",
+        "dispatching-parallel-agents",
+        "test-driven-development",
+        "systematic-debugging",
+        "verification-before-completion",
+        "requesting-code-review",
+        "receiving-code-review",
+        "using-git-worktrees",
+        "finishing-a-development-branch",
+        "writing-skills",
+        "diagnosing-superpowers"
       ]
     }
-  ]
+  ],
+  "known_tool_groups": {
+    "code-graph": [
+      "graphify",
+      "gitnexus",
+      "understand-anything"
+    ]
+  }
 }

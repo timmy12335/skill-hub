@@ -1,0 +1,23 @@
+{
+  "description": "理解陌生程式庫的標準工具：graphify 在本機用 tree-sitter 把程式碼與文件建成知識圖譜，可問「A 怎麼連到 B」。",
+  "tier": "core",
+  "tools": [
+    {
+      "id": "graphify",
+      "group": "code-graph",
+      "license": "Apache-2.0",
+      "homepage": "https://github.com/Graphify-Labs/graphify",
+      "check": "graphify",
+      "install": {
+        "cli": "uv tool install graphifyy（或 pipx install graphifyy）",
+        "claude": "graphify install --project",
+        "codex": "graphify install --project --platform codex",
+        "cursor": "graphify cursor install"
+      },
+      "skills": [
+        "graphify"
+      ],
+      "usage": "在 agent 中輸入 /graphify .（Codex 用 $graphify）建立圖譜，之後可 query / path / explain"
+    }
+  ]
+}

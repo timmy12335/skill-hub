@@ -110,13 +110,13 @@ def on_session_end(project):
     hub = lock.get("hub")
     if mode == "off" or not hub or Path(hub).resolve() == project.resolve():
         return
-    managed = set(lock.get("skills", {})) | set(cfg.get("adopted", {}))
+    managed = set(lock.get("skills", {})) | set(cfg.get("adopted", {})) | set(lock.get("external_skills", []))
     new = set()
     for rel in SKILL_DIRS:
         d = project / rel
         if d.is_dir():
             new |= {p.name for p in d.iterdir() if p.is_dir() and not p.is_symlink()
-                    and (p / "SKILL.md").exists() and p.name not in managed}
+                    and (p / "SKILL.md").exists() and p.name not in managed and not p.name.startswith("gitnexus")}
     if not new:
         return
     log = Path.home() / ".skillhub" / "adopt.log"

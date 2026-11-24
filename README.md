@@ -119,6 +119,27 @@ skillctl install plugin:pstack     # 或 skillctl init --plugins starter pstack
 
 組合包格式也因此擴充：`plugins/<名稱>.json` 可以加 `agent_plugins`，選了組合包才會啟用那些外部 plugin；`overlaps` 標示與哪個 plugin 重疊，`router` 指定負責分工的 skill。
 
+## 外部工具組合包：graphify、archify、GitNexus
+
+有些工具有自己的安裝程式，會自己把 skill 裝進 agent 資料夾。skill-hub 不複製它們，只在組合包裡宣告「要用哪個工具、怎麼裝、裝好會出現哪些 skill」：
+
+| 組合包 | 工具 | 層級 | 用途 | 授權 |
+|---|---|---|---|---|
+| `code-graph`（`starter` 已包含） | [graphify](https://github.com/Graphify-Labs/graphify) | core | 本機 tree-sitter 程式碼／文件知識圖譜，query / path / explain | Apache-2.0 |
+| `docs-visual` | [archify](https://github.com/tt-a1i/archify) | domain | 把需求、Mermaid、程式或 PR 畫成互動式 HTML 圖表 | Apache-2.0 |
+| `gitnexus` | [GitNexus](https://github.com/abhigyanpatwari/GitNexus) | domain（選用） | 影響分析、diff 影響、安全改名 | **PolyForm Noncommercial** |
+
+```bash
+skillctl install plugin:docs-visual
+skillctl tools          # 列出缺少的工具與各 agent 的安裝指令
+skillctl tools --run    # 直接執行（會跑第三方安裝程式）
+```
+
+- 組合包可以用 `extends` 引用其他組合包，`starter` 透過它帶入 `code-graph`。
+- 工具安裝的 skill（例如 `graphify`、`archify`、`gitnexus-*`）列入保留名，也不會被當成自建 skill 送去 adopt。
+- **同類工具只開一個**：graphify、GitNexus、understand-anything 都是程式碼圖譜，同時開會互搶；`sync` 和 `doctor` 會警告。
+- **GitNexus**：非商業授權，商業專案不要用。一律用 `gitnexus analyze --index-only`；不加這個參數它會改寫 CLAUDE.md／AGENTS.md、註冊 hook、安裝 skill，和 skill-hub 搶著管專案設定。
+
 ## Skill 生命週期
 
 1. **撰寫**：`skillctl new api-review --tier domain` → 填 `spec.md`（可搭配 superpowers 的 `writing-skills`） → `skillctl compile api-review --run` 產生 SKILL.md 草稿
