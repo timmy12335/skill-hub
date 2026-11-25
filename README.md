@@ -23,6 +23,8 @@ skill-hub/
 │           ├── evals/cases.jsonl
 │           └── CHANGELOG.md
 ├── plugins/*.json      skill 組合包
+├── teams/*.json        各團隊的必裝與建議
+├── telemetry/*.json    成員送進來的匿名使用彙總（看板用）
 ├── security/scan-results.json  安全掃描結果與已接受的風險
 ├── templates/skill/    新 skill 範本
 ├── hooks/skillhub_usage.py   使用量紀錄 hook
@@ -50,10 +52,11 @@ skillctl sync
 
 | 層 | 檔案 | 用途 |
 |---|---|---|
-| 1 hub | `skill-hub/skillhub.json` | 全部專案的預設 |
-| 2 使用者 | `~/.config/skillhub/config.json` | 你個人在每個專案都想要的 |
-| 3 專案 | `<project>/.skillhub.json`（進版控） | 這個專案需要的 plugin / skill |
-| 4 本機 | `<project>/.skillhub.local.json`（gitignore） | 只在你這台電腦試用 |
+| 1 hub | `skill-hub/skillhub.json` | 全部專案的預設與必裝 |
+| 2 團隊 | `skill-hub/teams/<團隊>.json` | 該團隊的必裝與建議（專案用 `"team"` 指定） |
+| 3 使用者 | `~/.config/skillhub/config.json` | 你個人在每個專案都想要的 |
+| 4 專案 | `<project>/.skillhub.json`（進版控） | 這個專案需要的 plugin / skill |
+| 5 本機 | `<project>/.skillhub.local.json`（gitignore） | 只在你這台電腦試用 |
 
 欄位：`plugins`、`include`、`exclude`（清單會累加，exclude 最後套用）；
 `always_on`、`mode`（`copy` 或 `link`）後者覆蓋前者；`pin: {"name": "1.0.0"}` 固定版本。
@@ -76,6 +79,42 @@ skillctl sync
 | `"off"` | 不偵測 |
 
 手動用法：`skillctl adopt`（全部）、`skillctl adopt sql-style`、`--no-pr`（只複製到本機 hub）、`--again`（已收編過，再送一次更新）。
+
+## 團隊必裝
+
+全部專案都要的放在 hub（`skillhub.json` 的必裝 plugin、`always-on` skill）。只有某個團隊要的，寫在 hub 的 `teams/<團隊>.json`：
+
+```json
+{
+  "description": "前端團隊：查最新框架文件，commit 訊息統一格式。",
+  "owners": ["@timmy12335"],
+  "required":    { "skills": ["commit-message"], "plugins": ["library-docs"], "agent_plugins": [] },
+  "recommended": { "skills": [], "plugins": ["docs-visual"] }
+}
+```
+
+專案在 `.skillhub.json` 寫 `"team": "frontend"`（可以是清單），或 `skillctl init --team frontend`。之後：
+
+- `sync` 會裝上 `required` 和 `recommended`。`required` 的 skill、組合包、plugin 跟 hub 必裝一樣，專案的 `exclude` 排除不掉。`recommended` 可以排除。
+- `doctor` 會檢查團隊必裝是否到位；`skillctl teams` 列出每個團隊的設定。
+- `lint`（CI）會檢查團隊檔引用的 skill 和組合包都存在。
+- 改 `teams/` 要經過 PR，CODEOWNERS 可以指定各團隊的負責人審。
+
+## 使用看板
+
+參考 Uber 的做法，用一個看板讓大家看到：hub 有哪些 skill、各團隊必裝什麼、哪些專案裝了什麼、用了多少次、eval 成績、安全掃描結果，以及「需要處理」清單（掃描被擋、eval 未達標、沒人用的退場候選、專案缺團隊必裝、待處理 papercut）。
+
+資料流：
+
+1. **記錄**：hook 每次使用寫一行到 `~/.skillhub/usage.jsonl`（含團隊名稱，不含 prompt）。`sync` 會記下這台電腦有哪些專案用 skill-hub。
+2. **回報**：成員在 hub 執行 `skillctl report --pr`，把本機的匿名彙總（每天每個 skill 幾次、各專案裝了哪些 skill、缺哪些團隊必裝）寫成 `telemetry/<代號>.json` 開 PR。只改 `telemetry/` 的 PR 由 CI 自動合併。可以排進每週的 cron。
+3. **發佈**：`.github/workflows/dashboard.yml` 在 main 更新時和每天一次執行 `skillctl dashboard`，把單一 HTML 頁發佈到 GitHub Pages。第一次要到 repo **Settings → Pages → Source** 選 **GitHub Actions**。私有 repo 的 Pages 需要付費方案；沒有的話在本機看：
+
+```bash
+skillctl dashboard --local --out site/index.html   # --local 把自己還沒回報的紀錄也算進去
+```
+
+eval 成績來自各 skill 的 `evals/score.json`（`skillctl eval` 會寫，進版控）；完整輸出 `last_result.json` 不進版控。
 
 ## 支援 Claude Code、Codex、Cursor
 
@@ -235,6 +274,8 @@ skillctl demote api-review --to domain        # 降一層
 2. Require review from Code Owners
 3. Require status checks to pass：選 `lint` 和 `security`
 
+`teams/` 可以在 CODEOWNERS 加一行讓各團隊負責人審自己的檔案，例如 `/teams/frontend.json @frontend-lead`。
+
 這樣 `domain/` 有 1 人 review 就能合併，`core/`、`always-on/`、`tools/` 則一定要 CODEOWNERS 裡的人審過。
 個人 repo 無法核准自己的 PR，只有自己一人時可先只開第 3 項。
 
@@ -250,5 +291,5 @@ skillctl demote api-review --to domain        # 降一層
 
 ## 遙測
 
-hook 只記錄：時間、skill 名稱、版本、觸發來源（agent / 使用者 `/指令`）、session 與專案的雜湊值。
+hook 只記錄：時間、skill 名稱、版本、觸發來源（agent / 使用者 `/指令`）、團隊名稱、session 與專案的雜湊值。
 不記錄 prompt 與檔案內容。設 `SKILLHUB_OTLP_ENDPOINT` 可另外送到 OpenTelemetry collector。

@@ -4,7 +4,7 @@
 參考 Uber 的 agent skill 管理做法縮小成個人／小團隊版：
   * 單一 hub repo 當 marketplace，skills/ 下分 always-on / core / domain 三層
   * 每個 skill 有 spec.md（意圖）→ SKILL.md（給 agent 的指令）
-  * 專案用分層設定（hub → 使用者 → 專案 → 本機）決定要裝哪些 skill
+  * 專案用分層設定（hub → 團隊 → 使用者 → 專案 → 本機）決定要裝哪些 skill
   * eval（golden / real / self 三種案例）+ ablation（有無 skill 對照）
   * hook 記錄使用量（不含 prompt 內容），stats 找出該改進或退場的 skill
 
@@ -12,7 +12,7 @@
   skillctl new <name> [--tier domain]        從範本建立新 skill
   skillctl lint [name ...]                    檢查格式（CI 用）
   skillctl list | find <關鍵字>               列出／搜尋 skill
-  skillctl init [--project DIR]               在專案啟用框架（設定檔 + hook + 同步）
+  skillctl init [--team 團隊] [--project DIR]  在專案啟用框架（設定檔 + hook + 同步）
   skillctl sync [--project DIR]               依分層設定安裝／更新 skill
   skillctl install <skill|plugin:名稱>        額外安裝到目前專案
   skillctl eval <name> [--ablation] [--dry-run]
@@ -25,6 +25,9 @@
   skillctl doctor [--project DIR]              檢查專案狀態（skill、hook、必裝 plugin）
   skillctl promote <name> [--to core|always-on] [--dry-run]   檢查條件並升級
   skillctl demote <name> [--to ...] [--status deprecated|retired]
+  skillctl teams                              列出各團隊的必裝與建議
+  skillctl report [--pr]                      匯出匿名使用彙總到 hub 的 telemetry/
+  skillctl dashboard [--out site/index.html]  產生靜態看板（CI 每天發佈到 GitHub Pages）
 """
 from __future__ import annotations
 
@@ -269,14 +272,35 @@ def cmd_lint(a):
             if n not in skills:
                 print(f"✗ plugins/{pf.name} 引用不存在的 skill：{n}")
                 n_err += 1
+    for t, d in all_teams().items():
+        for sec in ("required", "recommended"):
+            for n in d.get(sec, {}).get("skills", []):
+                if n not in skills:
+                    print(f"✗ teams/{t}.json 的 {sec} 引用不存在的 skill：{n}")
+                    n_err += 1
+            for b in d.get(sec, {}).get("plugins", []):
+                if not (HUB_ROOT / "plugins" / f"{b}.json").exists():
+                    print(f"✗ teams/{t}.json 的 {sec} 引用不存在的組合包：{b}")
+                    n_err += 1
+        for ap in d.get("required", {}).get("agent_plugins", []):
+            if "@" not in (ap if isinstance(ap, str) else ap.get("id", "")):
+                print(f"✗ teams/{t}.json 的 agent_plugins 要寫成 名稱@marketplace")
+                n_err += 1
     print(f"\n{len(targets)} 個 skill，{n_err} 個錯誤")
     sys.exit(1 if n_err else 0)
 
 
 # ---------------------------------------------------------------- list / find
+def eval_result(s: dict) -> dict:
+    for f in ("last_result.json", "score.json"):
+        d = read_json(s["path"] / "evals" / f)
+        if d:
+            return d
+    return {}
+
+
 def eval_score(s: dict):
-    f = s["path"] / "evals" / "last_result.json"
-    return read_json(f).get("pass_rate") if f.exists() else None
+    return eval_result(s).get("pass_rate")
 
 
 def cmd_list(a):
@@ -313,18 +337,54 @@ def cmd_list(a):
 
 
 # ---------------------------------------------------------------- 分層設定 / sync / install
+TEAMS_DIR = HUB_ROOT / "teams"
+
+
+def all_teams() -> dict:
+    return {p.stem: read_json(p) for p in sorted(TEAMS_DIR.glob("*.json"))} if TEAMS_DIR.exists() else {}
+
+
+def config_teams(project: Path) -> list:
+    """專案屬於哪些團隊：專案或本機設定的 "team"（字串或清單）。"""
+    teams = []
+    for p in (project / ".skillhub.json", project / ".skillhub.local.json"):
+        t = read_json(p).get("team")
+        for x in ([t] if isinstance(t, str) else (t or [])):
+            if x not in teams:
+                teams.append(x)
+    return teams
+
+
 def layered_config(project: Path) -> dict:
-    """設定合併順序（後面覆蓋前面）：hub 預設 → 使用者 → 專案 → 本機。"""
-    layers = [
-        ("hub", HUB_ROOT / "skillhub.json"),
+    """設定合併順序（後面覆蓋前面）：hub 預設 → 團隊 → 使用者 → 專案 → 本機。
+    團隊設定在 hub 的 teams/<團隊>.json，專案用 "team" 指定；團隊的 required 跟 hub 的必裝一樣不能被排除。"""
+    teams = config_teams(project)
+    layers = [("hub", HUB_ROOT / "skillhub.json")]
+    layers += [(f"team:{t}", TEAMS_DIR / f"{t}.json") for t in teams]
+    layers += [
         ("user", Path(os.environ.get("SKILLHUB_USER_CONFIG", Path.home() / ".config" / "skillhub" / "config.json"))),
         ("project", project / ".skillhub.json"),
         ("local", project / ".skillhub.local.json"),
     ]
     cfg = {"always_on": True, "agents": ["claude"], "hooks": True, "plugins": [], "include": [], "exclude": [], "pin": {}, "mode": "copy", "sources": [],
-           "agent_plugins": [], "exclude_agent_plugins": []}
+           "agent_plugins": [], "exclude_agent_plugins": [], "teams": teams, "team_required": {}, "missing_teams": []}
     for name, p in layers:
         d = read_json(p)
+        if name.startswith("team:"):
+            if not p.exists():
+                cfg["missing_teams"].append(name[5:])
+                continue
+            req = d.get("required", {})
+            for n in req.get("skills", []):
+                cfg["team_required"].setdefault(n, name)
+            d = {"plugins": req.get("plugins", []) + d.get("recommended", {}).get("plugins", []),
+                 "include": d.get("recommended", {}).get("skills", []),
+                 "agent_plugins": [dict({"id": ap} if isinstance(ap, str) else ap, required=True, team=name[5:])
+                                   for ap in req.get("agent_plugins", [])]}
+            cfg.setdefault("team_plugins", {}).update({b: name for b in req.get("plugins", [])})
+            for b in req.get("plugins", []):
+                for n in read_json(HUB_ROOT / "plugins" / f"{b}.json").get("skills", []):
+                    cfg["team_required"].setdefault(n, name)
         if not d:
             continue
         cfg["sources"].append(f"{name}:{p}")
@@ -333,18 +393,22 @@ def layered_config(project: Path) -> dict:
                 if v not in cfg[k]:
                     cfg[k].append(v)
         for k in ("always_on", "mode", "agents", "hooks"):
-            if k in d:
+            if k in d and not name.startswith("team:"):
                 cfg[k] = d[k]
         cfg["pin"].update(d.get("pin", {}))
         for ap in d.get("agent_plugins", []):
             ap = {"id": ap} if isinstance(ap, str) else dict(ap)
-            ap["required"] = bool(ap.get("required")) and name == "hub"  # 只有 hub 能設必裝
+            ap["required"] = bool(ap.get("required")) and (name == "hub" or name.startswith("team:"))  # 只有 hub 和團隊能設必裝
             if not any(x["id"] == ap["id"] for x in cfg["agent_plugins"]):
                 cfg["agent_plugins"].append(ap)
         cfg["exclude_agent_plugins"] += d.get("exclude_agent_plugins", [])
         cfg.setdefault("adopted", {}).update(d.get("adopted", {}))
         if "auto_adopt" in d:
             cfg["auto_adopt"] = d["auto_adopt"]
+    # 團隊必裝的組合包不能被排除：exclude 只能排除 skill，這裡確保組合包仍在
+    for b in cfg.get("team_plugins", {}):
+        if b not in cfg["plugins"]:
+            cfg["plugins"].append(b)
     return cfg
 
 
@@ -496,7 +560,7 @@ def wanted_agent_plugins(cfg: dict, warn: bool = False) -> list:
         if ap["id"] in cfg["exclude_agent_plugins"]:
             if ap.get("required"):
                 if warn:
-                    print(f"! {ap['id']} 是 hub 規定的必裝 plugin，不能排除")
+                    print(f"! {ap['id']} 是{('團隊 ' + ap['team']) if ap.get('team') else ' hub '}規定的必裝 plugin，不能排除")
             else:
                 continue
         out.append(ap)
@@ -550,6 +614,9 @@ def reserved_names() -> dict:
     return out
 
 
+_WARNED: set = set()
+
+
 def resolve_wanted(cfg: dict) -> dict:
     skills = all_skills()
     wanted = {}  # name -> 來源說明
@@ -564,7 +631,16 @@ def resolve_wanted(cfg: dict) -> dict:
     for n in cfg["include"]:
         wanted.setdefault(n, "include")
     for n in cfg["exclude"]:
+        if n in cfg.get("team_required", {}):
+            if n not in _WARNED:
+                _WARNED.add(n)
+                print(f"! {n} 是 {cfg['team_required'][n]} 的必裝 skill，不能排除")
+            continue
         wanted.pop(n, None)
+    for n, team in cfg.get("team_required", {}).items():
+        wanted[n] = team
+    for t in cfg.get("missing_teams", []):
+        print(f"! 找不到團隊設定 teams/{t}.json")
     out = {}
     for n, src in wanted.items():
         if n not in skills:
@@ -640,6 +716,25 @@ def find_local(project: Path, name: str):
     return None
 
 
+PROJECTS_FILE = USAGE_LOG.parent / "projects.json"
+
+
+def project_id(project: Path) -> str:
+    """和 hook 一樣的專案代號：預設是路徑雜湊，設 SKILLHUB_PROJECT_NAMES=1 才用資料夾名稱。"""
+    return project.name if os.environ.get("SKILLHUB_PROJECT_NAMES") else hashlib.sha256(str(project).encode()).hexdigest()[:10]
+
+
+def register_project(project: Path):
+    """記下這台電腦有哪些專案用 skill-hub，skillctl report 會讀它們的 lock 檔。"""
+    try:
+        reg = json.loads(PROJECTS_FILE.read_text(encoding="utf-8")) if PROJECTS_FILE.exists() else {}
+        reg[str(project)] = {"id": project_id(project), "seen": dt.date.today().isoformat()}
+        PROJECTS_FILE.parent.mkdir(parents=True, exist_ok=True)
+        PROJECTS_FILE.write_text(json.dumps(reg, ensure_ascii=False, indent=2), encoding="utf-8")
+    except (OSError, json.JSONDecodeError):
+        pass
+
+
 def cmd_sync(a):
     project = Path(a.project).resolve()
     cfg = layered_config(project)
@@ -688,7 +783,7 @@ def cmd_sync(a):
                 uninstall_one(n, project)
     if not a.dry_run:
         write_json(lock_p, {"hub": str(HUB_ROOT), "synced_at": dt.datetime.now(dt.timezone.utc).isoformat(timespec="seconds"),
-                            "agents": agents, "layout": main_dir, "skills": new_lock,
+                            "agents": agents, "layout": main_dir, "teams": cfg["teams"], "skills": new_lock,
                             "external_skills": sorted(external_skill_names())})
         # 舊版 lock 位置
         old = project / ".claude" / "skills.lock.json"
@@ -712,6 +807,7 @@ def cmd_sync(a):
         print(f"! {g} 類工具同時有 {', '.join(members)}，建議只留一個")
     if not a.dry_run:
         register_hooks(project, agents, cfg)
+        register_project(project)
     _, links = layout(agents)
     where = main_dir + (f"（{', '.join(links)} 以 symlink 指向）" if links else "")
     print(f"✓ {len(new_lock)} 個 skill 已同步到 {where}，agent：{', '.join(agents)}（設定來源：{', '.join(x.split(':')[0] for x in cfg['sources']) or '預設'}）")
@@ -819,11 +915,17 @@ def register_hooks(project: Path, agents, cfg: dict):
 
 def cmd_init(a):
     project = Path(a.project).resolve()
+    if a.team and not (TEAMS_DIR / f"{a.team}.json").exists():
+        die(f"找不到團隊 {a.team}（hub 的 teams/{a.team}.json）。現有團隊：{', '.join(all_teams()) or '無'}")
     cfg_p = project / ".skillhub.json"
     if not cfg_p.exists():
-        write_json(cfg_p, {"hub": str(HUB_ROOT), "agents": a.agents or ["claude"], "plugins": a.plugins or [],
-                           "include": [], "exclude": []})
+        write_json(cfg_p, {"hub": str(HUB_ROOT), **({"team": a.team} if a.team else {}),
+                           "agents": a.agents or ["claude"], "plugins": a.plugins or [], "include": [], "exclude": []})
         print(f"✓ 建立 {cfg_p.name}")
+    elif a.team:
+        pc = read_json(cfg_p)
+        pc["team"] = a.team
+        write_json(cfg_p, pc)
     # .gitignore：本機覆寫檔不進版控
     gi = project / ".gitignore"
     lines = gi.read_text(encoding="utf-8").splitlines() if gi.exists() else []
@@ -972,6 +1074,9 @@ def cmd_eval(a):
         if base >= rate:
             print("  → 模型不靠這個 skill 也做得一樣好，可考慮退場（metadata.status: deprecated）")
     write_json(s["path"] / "evals" / "last_result.json", summary)
+    # 精簡版成績會進版控，看板和 promote 都讀得到（last_result.json 含完整輸出，不進版控）
+    write_json(s["path"] / "evals" / "score.json", {k: summary[k] for k in ("version", "pass_rate", "ran_at")}
+               | ({"baseline_pass_rate": summary["baseline_pass_rate"]} if "baseline_pass_rate" in summary else {}))
 
 
 # ---------------------------------------------------------------- stats / papercut / compile
@@ -1116,7 +1221,7 @@ def promotion_checks(s: dict, target: str, days: int) -> list[tuple[bool, str]]:
     except json.JSONDecodeError:
         n_cases = 0
     checks.append((n_cases >= rules["min_cases"], f"eval 案例 ≥ {rules['min_cases']}（目前 {n_cases}）"))
-    res = read_json(s["path"] / "evals" / "last_result.json")
+    res = eval_result(s)
     rate = res.get("pass_rate")
     fresh = res.get("version") == s["version"]
     checks.append((rate is not None and fresh and rate >= rules["min_pass"],
@@ -1598,6 +1703,16 @@ def cmd_doctor(a):
     for ld in links:
         missing += [f"{ld}/{n}" for n in resolve_wanted(cfg) if not (project / ld / n).is_symlink()]
     checks.append((not missing, "設定要求的 skill 都已安裝" + (f"（缺：{', '.join(missing)}）" if missing else "")))
+    for t in cfg.get("missing_teams", []):
+        checks.append((False, f"團隊設定 teams/{t}.json 存在（hub 裡沒有這個團隊）"))
+    for t in cfg.get("teams", []):
+        if t in cfg.get("missing_teams", []):
+            continue
+        req = [n for n, src in cfg["team_required"].items() if src == f"team:{t}"]
+        miss = [n for n in req if not (project / main_dir / n).exists()]
+        reqp = [ap["id"] for ap in cfg["agent_plugins"] if ap.get("team") == t]
+        checks.append((not miss, f"團隊 {t} 的必裝 skill 都已安裝（{len(req)} 個" + (f"，缺：{', '.join(miss)}" if miss else "")
+                       + (f"；必裝 plugin：{', '.join(reqp)}" if reqp else "") + "）"))
     adopted = cfg.get("adopted", {})
     un = [n for n in unmanaged_skills(project) if n not in adopted]
     checks.append((not un, "專案內沒有未送進 hub 的自建 skill" + (f"（{', '.join(un)}，執行 skillctl adopt）" if un else "")))
@@ -1669,6 +1784,172 @@ def cmd_doctor(a):
     sys.exit(1 if bad else 0)
 
 
+# ---------------------------------------------------------------- teams / report / dashboard：團隊必裝與使用看板
+TELEMETRY_DIR = HUB_ROOT / "telemetry"
+
+
+def cmd_teams(a):
+    teams = all_teams()
+    if not teams:
+        print("hub 還沒有團隊設定。新增 teams/<團隊>.json，格式見 README「團隊必裝」。")
+        return
+    for t, d in teams.items():
+        req = d.get("required", {})
+        print(f"{t}：{d.get('description', '')}（負責人 {', '.join(d.get('owners', [])) or '未設定'}）")
+        for k, label in (("skills", "必裝 skill"), ("plugins", "必裝組合包"), ("agent_plugins", "必裝 plugin")):
+            if req.get(k):
+                print(f"  {label}：{', '.join(x if isinstance(x, str) else x['id'] for x in req[k])}")
+        rec = d.get("recommended", {})
+        if rec.get("skills") or rec.get("plugins"):
+            print(f"  建議：{', '.join(rec.get('skills', []) + ['plugin:' + b for b in rec.get('plugins', [])])}")
+
+
+def reporter_id() -> str:
+    who = run(["git", "config", "user.email"], HUB_ROOT, check=False) or os.environ.get("USER", "unknown")
+    return hashlib.sha256(who.encode()).hexdigest()[:10]
+
+
+def build_report(days: int) -> dict:
+    """本機的匿名彙總：各專案裝了什麼（讀 lock 檔），以及每天每個 skill 用了幾次。不含 prompt 或檔案內容。"""
+    projects = []
+    reg = read_json(PROJECTS_FILE)
+    for path, info in reg.items():
+        lock = read_json(Path(path) / LOCK_REL)
+        if not lock:
+            continue
+        cfg = layered_config(Path(path))
+        main_dir, _ = layout(lock.get("agents", ["claude"]))
+        miss = [n for n in cfg.get("team_required", {}) if not (Path(path) / main_dir / n).exists()]
+        projects.append({"id": info.get("id") or project_id(Path(path)), "teams": lock.get("teams", []),
+                         "agents": lock.get("agents", []), "synced_at": lock.get("synced_at"),
+                         "skills": {n: v.get("version") for n, v in lock.get("skills", {}).items()},
+                         "external_skills": lock.get("external_skills", []),
+                         "agent_plugins": lock.get("agent_plugins", []), "missing_required": miss})
+    agg = {}
+    for r in read_usage(days):
+        if r.get("event") != "skill_invoked":
+            continue
+        k = (r["skill"], r.get("version"), r.get("team"), r.get("project"), r.get("agent"), r.get("source"), r["ts"][:10])
+        g = agg.setdefault(k, {"count": 0, "errors": 0, "sessions": set()})
+        g["count"] += 1
+        g["errors"] += 1 if r.get("error") else 0
+        g["sessions"].add(r.get("session"))
+    usage = [{"skill": k[0], "version": k[1], "team": k[2], "project": k[3], "agent": k[4], "source": k[5], "day": k[6],
+              "count": g["count"], "errors": g["errors"], "sessions": len(g["sessions"])} for k, g in sorted(agg.items(), key=lambda x: x[0][6])]
+    return {"schema": 1, "reporter": reporter_id(), "generated": dt.datetime.now(dt.timezone.utc).isoformat(timespec="seconds"),
+            "days": days, "projects": projects, "usage": usage}
+
+
+def _pr_with_files(branch: str, files: dict, title: str, body: str) -> str:
+    """在暫存 worktree 從 origin 預設分支開分支、寫入檔案、推上去並開 PR，不動目前的 hub checkout。"""
+    if not shutil.which("gh"):
+        raise RuntimeError("需要 GitHub CLI（gh）並先 gh auth login")
+    run(["git", "fetch", "-q", "origin"], HUB_ROOT)
+    base = run(["git", "symbolic-ref", "--short", "refs/remotes/origin/HEAD"], HUB_ROOT, check=False) or "origin/main"
+    wt = Path(tempfile.mkdtemp(prefix="skillhub-pr-"))
+    try:
+        run(["git", "worktree", "add", "-q", "-B", branch, str(wt), base], HUB_ROOT)
+        for rel, content in files.items():
+            (wt / rel).parent.mkdir(parents=True, exist_ok=True)
+            (wt / rel).write_text(content, encoding="utf-8")
+        run(["git", "add", "-A", *files], wt)
+        if not run(["git", "status", "--porcelain"], wt):
+            return "（沒有變更）"
+        run(["git", "commit", "-q", "-m", title], wt)
+        run(["git", "push", "-q", "-f", "-u", "origin", branch], wt)
+        existing = run(["gh", "pr", "list", "--head", branch, "--json", "url", "-q", ".[0].url"], wt, check=False)
+        return existing or run(["gh", "pr", "create", "--base", base.split("/", 1)[1], "--head", branch,
+                                "--title", title, "--body", body], wt)
+    finally:
+        run(["git", "worktree", "remove", "--force", str(wt)], HUB_ROOT, check=False)
+
+
+def cmd_report(a):
+    rep = build_report(a.days)
+    rel = f"telemetry/{rep['reporter']}.json"
+    text = json.dumps(rep, ensure_ascii=False, indent=1) + "\n"
+    n_use = sum(u["count"] for u in rep["usage"])
+    print(f"彙總：{len(rep['projects'])} 個專案、{a.days} 天內 {n_use} 次 skill 使用（匿名代號 {rep['reporter']}）")
+    if a.pr:
+        try:
+            url = _pr_with_files(f"telemetry/{rep['reporter']}", {rel: text}, f"Telemetry report {rep['reporter']}",
+                                 "由 `skillctl report --pr` 建立的匿名使用彙總（不含 prompt 或檔案內容）。"
+                                 "只改動 `telemetry/` 時 CI 會自動合併，看板會在合併後更新。")
+            print(f"✓ 已送出：{url}")
+        except RuntimeError as e:
+            die(str(e))
+        return
+    out = Path(a.out) if a.out else HUB_ROOT / rel
+    out.parent.mkdir(parents=True, exist_ok=True)
+    out.write_text(text, encoding="utf-8")
+    print(f"✓ 寫入 {out}（commit 後看板會用到；或改用 --pr 自動開 PR）")
+
+
+def collect_dashboard(days: int, local: bool) -> dict:
+    skills = all_skills()
+    scans = read_json(SCAN_RESULTS)
+    reports = [read_json(p) for p in sorted(TELEMETRY_DIR.glob("*.json"))] if TELEMETRY_DIR.exists() else []
+    if local:
+        mine = build_report(days)
+        reports = [r for r in reports if r.get("reporter") != mine["reporter"]] + [mine]
+    cutoff = (dt.date.today() - dt.timedelta(days=days)).isoformat()
+    usage = [u for r in reports for u in r.get("usage", []) if u.get("day", "") >= cutoff]
+    projects = {}
+    for r in reports:
+        for p in r.get("projects", []):
+            projects[p["id"]] = p  # 同一專案多人回報時取最後一份
+    teams = all_teams()
+    sk = []
+    for n, s in sorted(skills.items()):
+        us = [u for u in usage if u["skill"] == n]
+        ev = eval_result(s)
+        sc = scans.get(f"skill:{n}", {})
+        fb = s["path"] / "feedback.jsonl"
+        sk.append({"name": n, "tier": s["tier"], "status": s["status"], "version": s["version"], "owner": s.get("owner"),
+                   "description": s["description"][:240],
+                   "uses": sum(u["count"] for u in us), "errors": sum(u["errors"] for u in us),
+                   "projects": len({u["project"] for u in us}), "teams": sorted({t for u in us for t in (u.get("team") or "").split(",") if t}),
+                   "installed_in": sum(1 for p in projects.values() if n in p.get("skills", {})),
+                   "last_used": max((u["day"] for u in us), default=None),
+                   "daily": {d: sum(u["count"] for u in us if u["day"] == d) for d in sorted({u["day"] for u in us})},
+                   "eval": ev.get("pass_rate"), "eval_version": ev.get("version"), "baseline": ev.get("baseline_pass_rate"),
+                   "scan": {k: sc.get(k) for k in ("score", "recommendation", "blocked", "scanner")} | {"accepted": bool(sc.get("accepted"))} if sc else None,
+                   "papercuts": len(fb.read_text(encoding="utf-8").splitlines()) if fb.exists() else 0,
+                   "required_by": sorted(t for t, d in teams.items() if n in d.get("required", {}).get("skills", [])
+                                         or any(n in read_json(HUB_ROOT / "plugins" / f"{b}.json").get("skills", [])
+                                                for b in d.get("required", {}).get("plugins", [])))})
+    tm = []
+    for t, d in teams.items():
+        ps = [p for p in projects.values() if t in p.get("teams", [])]
+        tm.append({"name": t, "description": d.get("description", ""), "owners": d.get("owners", []),
+                   "required": d.get("required", {}), "recommended": d.get("recommended", {}),
+                   "projects": len(ps), "compliant": sum(1 for p in ps if not p.get("missing_required")),
+                   "uses": sum(u["count"] for u in usage if t in (u.get("team") or "").split(","))})
+    hub = read_json(HUB_ROOT / "skillhub.json")
+    ext = [{"key": k, **{x: v.get(x) for x in ("score", "recommendation", "blocked", "scanner", "scanned_at")},
+            "accepted": (v.get("accepted") or {}).get("reason")} for k, v in scans.items() if not k.startswith("skill:")]
+    commit = run(["git", "rev-parse", "--short", "HEAD"], HUB_ROOT, check=False)
+    return {"generated": dt.datetime.now(dt.timezone.utc).isoformat(timespec="minutes"), "days": days, "commit": commit,
+            "reporters": len(reports), "skills": sk, "teams": tm, "projects": list(projects.values()),
+            "bundles": [{"name": b, "tier": d.get("tier", "domain"), "description": d.get("description", ""),
+                         "skills": d.get("skills", []), "tools": [tl["id"] for tl in d.get("tools", [])],
+                         "extends": d.get("extends", [])} for b, d in all_bundles().items()],
+            "required_plugins": [ap if isinstance(ap, str) else ap["id"] for ap in hub.get("agent_plugins", [])
+                                 if isinstance(ap, str) or ap.get("required")],
+            "external_scans": ext, "promotion": hub.get("promotion", {})}
+
+
+def cmd_dashboard(a):
+    data = collect_dashboard(a.days, a.local)
+    tpl = (HUB_ROOT / "tools" / "dashboard.html").read_text(encoding="utf-8")
+    payload = json.dumps(data, ensure_ascii=False).replace("</", "<\\/")
+    out = Path(a.out)
+    out.parent.mkdir(parents=True, exist_ok=True)
+    out.write_text(tpl.replace("/*__DATA__*/null", payload), encoding="utf-8")
+    print(f"✓ 看板寫入 {out}（{len(data['skills'])} 個 skill、{len(data['teams'])} 個團隊、"
+          f"{len(data['projects'])} 個專案、{data['reporters']} 份回報）")
+
+
 # ---------------------------------------------------------------- main
 def main(argv=None):
     p = argparse.ArgumentParser(prog="skillctl", description="通用 Agent Skill 管理工具")
@@ -1700,6 +1981,7 @@ def main(argv=None):
             x.add_argument("--plugins", nargs="*")
             x.add_argument("--agents", nargs="+", choices=AGENTS, help="要支援的 agent，預設 claude")
             x.add_argument("--no-hook", action="store_true")
+            x.add_argument("--team", help="專案所屬團隊（hub 的 teams/<團隊>.json），會套用該團隊的必裝")
         if nm == "install":
             x.add_argument("items", nargs="+", help="skill 名稱或 plugin:名稱")
         x.set_defaults(fn=fn)
@@ -1713,6 +1995,21 @@ def main(argv=None):
     x.add_argument("--model")
     x.add_argument("--allow-tools", default=EVAL_TOOLS, help=f"eval 時允許的工具（預設 {EVAL_TOOLS}）")
     x.set_defaults(fn=cmd_eval)
+
+    x = sub.add_parser("teams", help="列出各團隊的必裝與建議 skill")
+    x.set_defaults(fn=cmd_teams)
+
+    x = sub.add_parser("report", help="匯出本機匿名使用彙總到 hub 的 telemetry/（給看板用）")
+    x.add_argument("--days", type=int, default=30)
+    x.add_argument("--out", help="輸出檔（預設 hub 的 telemetry/<代號>.json）")
+    x.add_argument("--pr", action="store_true", help="直接開 PR 送進 hub（只改 telemetry/ 時 CI 自動合併）")
+    x.set_defaults(fn=cmd_report)
+
+    x = sub.add_parser("dashboard", help="產生靜態看板：分級、團隊、專案、用量、eval、安全掃描")
+    x.add_argument("--out", default="site/index.html")
+    x.add_argument("--days", type=int, default=30)
+    x.add_argument("--local", action="store_true", help="把本機還沒回報的使用紀錄也算進去")
+    x.set_defaults(fn=cmd_dashboard)
 
     x = sub.add_parser("stats", help="使用量統計")
     x.add_argument("--days", type=int, default=30)

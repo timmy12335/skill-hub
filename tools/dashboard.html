@@ -1,0 +1,268 @@
+<!doctype html>
+<html lang="zh-Hant">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Skill Hub 看板</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500&family=IBM+Plex+Sans:wght@400;500;600&family=Noto+Sans+TC:wght@400;500;700&display=swap">
+<style>
+/* 版面：上方摘要列 → 需要處理 → skill 表（可篩選）→ 團隊 → 專案 → 組合包與外部掃描。像儀表板一樣先看摘要再看細節。 */
+:root {
+  --bg: #f6f7f5; --panel: #ffffff; --fg: #1d2420; --muted: #5d6b63; --line: #dde3de;
+  --accent: #2f6f5e; --accent-soft: #e3efe9;
+  --ok: #2f7a4b; --ok-soft: #e2f1e7; --warn: #a3650b; --warn-soft: #f8edd9; --bad: #b4322b; --bad-soft: #f8e2df;
+  --t-always: #7a4fb0; --t-core: #2f6f5e; --t-domain: #49678f;
+  --sans: "IBM Plex Sans", "Noto Sans TC", system-ui, sans-serif;
+  --mono: "IBM Plex Mono", ui-monospace, Menlo, monospace;
+  color-scheme: light;
+}
+@media (prefers-color-scheme: dark) { :root:not([data-theme="light"]) {
+  --bg: #121614; --panel: #1a201d; --fg: #e4ebe6; --muted: #98a69e; --line: #2c3530;
+  --accent: #6fc2a7; --accent-soft: #1f322b;
+  --ok: #6cc78f; --ok-soft: #1c3124; --warn: #e3a94a; --warn-soft: #3a2d16; --bad: #f08a80; --bad-soft: #3d201d;
+  --t-always: #b896e6; --t-core: #6fc2a7; --t-domain: #8fb0dd; color-scheme: dark; } }
+:root[data-theme="dark"] {
+  --bg: #121614; --panel: #1a201d; --fg: #e4ebe6; --muted: #98a69e; --line: #2c3530;
+  --accent: #6fc2a7; --accent-soft: #1f322b;
+  --ok: #6cc78f; --ok-soft: #1c3124; --warn: #e3a94a; --warn-soft: #3a2d16; --bad: #f08a80; --bad-soft: #3d201d;
+  --t-always: #b896e6; --t-core: #6fc2a7; --t-domain: #8fb0dd; color-scheme: dark; }
+* { box-sizing: border-box; }
+body { margin: 0; background: var(--bg); color: var(--fg); font: 14px/1.55 var(--sans); }
+.wrap { max-width: 1180px; margin: 0 auto; padding-block: 28px 64px;
+  padding-left: max(16px, env(safe-area-inset-left, 0px)); padding-right: max(16px, env(safe-area-inset-right, 0px));
+  display: grid; gap: 28px; }
+header { display: flex; flex-wrap: wrap; align-items: baseline; justify-content: space-between; gap: 8px 24px; }
+h1 { margin: 0; font-size: 1.6rem; font-weight: 600; letter-spacing: -.01em; }
+h2 { margin: 0 0 12px; font-size: 1.05rem; font-weight: 600; text-wrap: balance; }
+.meta { color: var(--muted); font: 12px var(--mono); }
+.kpis { display: grid; grid-template-columns: repeat(auto-fit, minmax(160px, 1fr)); gap: 12px; }
+.kpi { background: var(--panel); border: 1px solid var(--line); border-radius: 8px; padding: 14px 16px; }
+.kpi b { display: block; font: 500 1.7rem/1.1 var(--mono); font-variant-numeric: tabular-nums; }
+.kpi span { color: var(--muted); font-size: 12px; letter-spacing: .02em; }
+.kpi.alert b { color: var(--bad); }
+section { min-width: 0; }
+.panel { background: var(--panel); border: 1px solid var(--line); border-radius: 8px; }
+.attn { display: grid; gap: 0; }
+.attn div { display: grid; grid-template-columns: 92px 1fr; gap: 12px; padding: 9px 14px; border-top: 1px solid var(--line); }
+.attn div:first-child { border-top: 0; }
+.attn p { margin: 0; min-width: 0; }
+.empty { color: var(--muted); padding: 14px; margin: 0; }
+.pill { display: inline-block; padding: 1px 8px; border-radius: 999px; font-size: 12px; font-weight: 500; white-space: nowrap; }
+.p-bad { background: var(--bad-soft); color: var(--bad); }
+.p-warn { background: var(--warn-soft); color: var(--warn); }
+.p-ok { background: var(--ok-soft); color: var(--ok); }
+.p-mute { background: var(--accent-soft); color: var(--muted); }
+.tier { font: 500 11px var(--mono); letter-spacing: .04em; text-transform: uppercase; }
+.tier-always-on { color: var(--t-always); } .tier-core { color: var(--t-core); } .tier-domain { color: var(--t-domain); }
+.filters { display: flex; flex-wrap: wrap; gap: 8px; margin-bottom: 10px; }
+.filters input, .filters select { font: inherit; color: var(--fg); background: var(--panel); border: 1px solid var(--line); border-radius: 6px; padding: 6px 10px; min-width: 0; }
+.filters input { flex: 1 1 220px; }
+.filters input:focus-visible, .filters select:focus-visible, th button:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+.tbl { overflow-x: auto; }
+table { width: 100%; border-collapse: collapse; font-variant-numeric: tabular-nums; }
+th, td { text-align: left; padding: 8px 12px; border-top: 1px solid var(--line); vertical-align: top; }
+thead th { border-top: 0; font-size: 12px; color: var(--muted); font-weight: 500; white-space: nowrap; }
+th button { all: unset; cursor: pointer; }
+th button[aria-sort]::after { content: " ↓"; } th button[aria-sort="ascending"]::after { content: " ↑"; }
+td.num { text-align: right; font-family: var(--mono); }
+th.num { text-align: right; }
+.name { font-weight: 500; }
+.desc { color: var(--muted); font-size: 12px; max-width: 46ch; }
+svg.spark { display: block; }
+.teams { display: grid; grid-template-columns: repeat(auto-fill, minmax(280px, 1fr)); gap: 12px; }
+.team { padding: 14px 16px; display: grid; gap: 8px; align-content: start; }
+.team h3 { margin: 0; font-size: 1rem; display: flex; justify-content: space-between; gap: 8px; }
+.team p { margin: 0; color: var(--muted); }
+.chips { display: flex; flex-wrap: wrap; gap: 4px; }
+.chip { font: 12px var(--mono); padding: 1px 7px; border: 1px solid var(--line); border-radius: 4px; }
+.chip.req { border-color: var(--accent); color: var(--accent); }
+.bar { height: 6px; background: var(--accent-soft); border-radius: 3px; overflow: hidden; }
+.bar i { display: block; height: 100%; background: var(--accent); }
+.mono { font-family: var(--mono); font-size: 12px; }
+footer { color: var(--muted); font-size: 12px; }
+footer code { font-family: var(--mono); }
+@media (max-width: 560px) { .attn div { grid-template-columns: 1fr; gap: 2px; } }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <header>
+    <h1>Skill Hub 看板</h1>
+    <div class="meta" id="meta"></div>
+  </header>
+  <div class="kpis" id="kpis"></div>
+
+  <section>
+    <h2>需要處理</h2>
+    <div class="panel attn" id="attn"></div>
+  </section>
+
+  <section>
+    <h2>Skill</h2>
+    <div class="filters">
+      <input id="q" type="search" placeholder="搜尋名稱或說明" aria-label="搜尋 skill">
+      <select id="ftier" aria-label="分級"><option value="">全部分級</option><option>always-on</option><option>core</option><option>domain</option></select>
+      <select id="fteam" aria-label="團隊"><option value="">全部團隊</option></select>
+      <select id="fstatus" aria-label="狀態"><option value="">全部狀態</option><option>active</option><option>deprecated</option><option>retired</option></select>
+    </div>
+    <div class="panel tbl"><table id="skills"><thead><tr>
+      <th><button data-k="name">名稱</button></th><th>分級</th><th>版本 / 負責人</th>
+      <th class="num"><button data-k="uses" aria-sort="descending">使用次數</button></th><th>趨勢</th>
+      <th class="num"><button data-k="projects">專案</button></th><th class="num"><button data-k="installed_in">已安裝</button></th>
+      <th class="num"><button data-k="errrate">錯誤率</button></th><th class="num"><button data-k="eval">Eval</button></th><th>安全掃描</th>
+    </tr></thead><tbody></tbody></table></div>
+  </section>
+
+  <section>
+    <h2>團隊必裝</h2>
+    <div class="teams" id="teams"></div>
+  </section>
+
+  <section>
+    <h2>專案</h2>
+    <div class="panel tbl"><table id="projects"><thead><tr>
+      <th>專案代號</th><th>團隊</th><th>Agent</th><th class="num">Skill 數</th><th>缺少的必裝</th><th>最後同步</th>
+    </tr></thead><tbody></tbody></table></div>
+  </section>
+
+  <section>
+    <h2>組合包與外部工具</h2>
+    <div class="panel tbl"><table id="bundles"><thead><tr>
+      <th>組合包</th><th>分級</th><th>內容</th><th>說明</th>
+    </tr></thead><tbody></tbody></table></div>
+    <div class="panel tbl" style="margin-top:12px"><table id="ext"><thead><tr>
+      <th>外部工具 / plugin</th><th>掃描結果</th><th>掃描器</th><th>接受理由</th><th>掃描日期</th>
+    </tr></thead><tbody></tbody></table></div>
+  </section>
+
+  <footer>由 <code>skillctl dashboard</code> 產生。使用量來自各成員以 <code>skillctl report</code> 送進 hub 的匿名彙總（不含 prompt 或檔案內容）；專案代號預設是路徑雜湊。</footer>
+</div>
+
+<script>
+const D = /*__DATA__*/null;
+const $ = s => document.querySelector(s);
+const esc = s => String(s ?? "").replace(/[&<>"]/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;","\"":"&quot;"}[c]));
+const pct = v => v == null ? "—" : Math.round(v * 100) + "%";
+const MIN_PASS = (D.promotion && D.promotion.core && D.promotion.core.min_pass) || 0.7;
+
+D.skills.forEach(s => { s.errrate = s.uses ? s.errors / s.uses : null; });
+const active = D.skills.filter(s => s.status === "active");
+const totalUses = D.skills.reduce((a, s) => a + s.uses, 0);
+const teamProjects = D.teams.reduce((a, t) => a + t.projects, 0);
+const teamOk = D.teams.reduce((a, t) => a + t.compliant, 0);
+
+// 需要處理：被擋的掃描、eval 未達標、沒人用的 skill、團隊必裝缺漏、待處理回報
+const attn = [];
+D.skills.forEach(s => {
+  if (s.scan && s.scan.blocked && !s.scan.accepted) attn.push(["bad", "安全掃描", `<b>${esc(s.name)}</b> 被 ${esc(s.scan.scanner)} 判為 ${esc(s.scan.recommendation)}（${s.scan.score}/100）。確認誤判後用 <code>skillctl scan --accept skill:${esc(s.name)}</code>`]);
+  if (s.eval != null && s.eval < MIN_PASS) attn.push(["warn", "Eval", `<b>${esc(s.name)}</b> 通過率 ${pct(s.eval)}，低於 ${pct(MIN_PASS)}`]);
+  if (s.eval != null && s.baseline != null && s.baseline >= s.eval) attn.push(["warn", "Ablation", `<b>${esc(s.name)}</b> 沒有這個 skill 時通過率 ${pct(s.baseline)}，不低於有 skill 的 ${pct(s.eval)}，可考慮退場`]);
+  if (s.status === "active" && s.tier !== "always-on" && !s.uses && D.reporters) attn.push(["mute", "沒人使用", `<b>${esc(s.name)}</b> ${D.days} 天內沒有使用紀錄（退場候選，或 description 讓 agent 找不到）`]);
+  if (s.papercuts) attn.push(["mute", "Papercut", `<b>${esc(s.name)}</b> 有 ${s.papercuts} 則待處理回報`]);
+});
+D.projects.forEach(p => { if ((p.missing_required || []).length) attn.push(["bad", "團隊必裝", `專案 <span class="mono">${esc(p.id)}</span>（${esc((p.teams || []).join(", "))}）缺：${esc(p.missing_required.join(", "))}，請在專案執行 <code>skillctl sync</code>`]); });
+(D.external_scans || []).forEach(e => { if (e.blocked && !e.accepted) attn.push(["bad", "外部掃描", `<b>${esc(e.key)}</b> 判為 ${esc(e.recommendation)}（${e.score}/100），尚未審閱接受`]); });
+const order = {bad: 0, warn: 1, mute: 2};
+attn.sort((a, b) => order[a[0]] - order[b[0]]);
+
+$("#meta").textContent = `近 ${D.days} 天 · ${D.reporters} 份回報 · hub ${D.commit || "?"} · 產生於 ${D.generated.replace("T", " ")} UTC`;
+const kpi = (v, l, cls = "") => `<div class="kpi ${cls}"><b>${v}</b><span>${l}</span></div>`;
+$("#kpis").innerHTML = [
+  kpi(active.length, `啟用中的 skill（共 ${D.skills.length}）`),
+  kpi(totalUses.toLocaleString(), `近 ${D.days} 天使用次數`),
+  kpi(D.projects.length, "回報中的專案"),
+  kpi(teamProjects ? Math.round(teamOk / teamProjects * 100) + "%" : "—", `團隊必裝達成（${teamOk}/${teamProjects} 專案）`),
+  kpi(attn.filter(a => a[0] === "bad").length, "需要立即處理", attn.some(a => a[0] === "bad") ? "alert" : ""),
+].join("");
+$("#attn").innerHTML = attn.length
+  ? attn.map(([lv, k, msg]) => `<div><span><span class="pill p-${lv}">${k}</span></span><p>${msg}</p></div>`).join("")
+  : `<p class="empty">目前沒有需要處理的項目。</p>`;
+
+// 趨勢小圖：每日使用次數
+const days = [];
+for (let i = D.days - 1; i >= 0; i--) { const d = new Date(Date.parse(D.generated) - i * 864e5); days.push(d.toISOString().slice(0, 10)); }
+function spark(daily) {
+  const v = days.map(d => daily[d] || 0), max = Math.max(1, ...v), W = 96, H = 22;
+  if (!v.some(Boolean)) return `<span class="meta">—</span>`;
+  const pts = v.map((y, i) => [i * W / (v.length - 1 || 1), H - 2 - y / max * (H - 4)]);
+  const line = pts.map(p => p.map(n => n.toFixed(1)).join(",")).join(" ");
+  const last = pts[pts.length - 1];
+  return `<svg class="spark" width="${W}" height="${H}" viewBox="0 0 ${W} ${H}" role="img" aria-label="每日使用，最高 ${max} 次">
+    <polygon points="0,${H} ${line} ${W},${H}" fill="var(--accent-soft)"/>
+    <polyline points="${line}" fill="none" stroke="var(--accent)" stroke-width="1.5"/>
+    <circle cx="${last[0]}" cy="${last[1]}" r="2.2" fill="var(--accent)"/></svg>`;
+}
+function scanCell(sc) {
+  if (!sc) return `<span class="pill p-mute">未掃描</span>`;
+  const lv = sc.blocked ? (sc.accepted ? "warn" : "bad") : (sc.recommendation === "CAUTION" ? "warn" : "ok");
+  return `<span class="pill p-${lv}">${esc(sc.recommendation)} ${sc.score ?? ""}</span>${sc.accepted ? ' <span class="meta">已接受</span>' : ""}`;
+}
+function evalCell(s) {
+  if (s.eval == null) return `<span class="meta">—</span>`;
+  const lv = s.eval >= MIN_PASS ? "ok" : "warn";
+  return `<span class="pill p-${lv}">${pct(s.eval)}</span>` + (s.eval_version && s.eval_version !== s.version ? `<div class="meta">v${esc(s.eval_version)}</div>` : "");
+}
+
+let sortK = "uses", sortDir = -1;
+const teamSel = $("#fteam");
+D.teams.forEach(t => teamSel.insertAdjacentHTML("beforeend", `<option>${esc(t.name)}</option>`));
+try { const saved = JSON.parse(localStorage.getItem("skillhub-filters") || "{}"); ["q","ftier","fteam","fstatus"].forEach(id => { if (saved[id] != null) $("#" + id).value = saved[id]; }); } catch (e) {}
+function renderSkills() {
+  const q = $("#q").value.trim().toLowerCase(), ft = $("#ftier").value, fm = $("#fteam").value, fs = $("#fstatus").value;
+  try { localStorage.setItem("skillhub-filters", JSON.stringify({q, ftier: ft, fteam: fm, fstatus: fs})); } catch (e) {}
+  const rows = D.skills.filter(s => (!q || (s.name + " " + s.description).toLowerCase().includes(q)) && (!ft || s.tier === ft)
+    && (!fm || s.teams.includes(fm) || s.required_by.includes(fm)) && (!fs || s.status === fs));
+  rows.sort((a, b) => { const x = a[sortK], y = b[sortK]; if (x == null) return 1; if (y == null) return -1; return (x > y ? 1 : x < y ? -1 : 0) * sortDir; });
+  $("#skills tbody").innerHTML = rows.length ? rows.map(s => `<tr>
+    <td><div class="name">${esc(s.name)}${s.status !== "active" ? ` <span class="pill p-warn">${esc(s.status)}</span>` : ""}</div>
+      <div class="desc">${esc(s.description)}</div>${s.required_by.length ? `<div class="chips" style="margin-top:4px">${s.required_by.map(t => `<span class="chip req">${esc(t)} 必裝</span>`).join("")}</div>` : ""}</td>
+    <td><span class="tier tier-${s.tier}">${s.tier}</span></td>
+    <td class="mono">v${esc(s.version)}<div class="meta">${esc(s.owner || "—")}</div></td>
+    <td class="num">${s.uses.toLocaleString()}</td><td>${spark(s.daily)}</td>
+    <td class="num">${s.projects}</td><td class="num">${s.installed_in}</td>
+    <td class="num">${s.errrate == null ? "—" : pct(s.errrate)}</td><td class="num">${evalCell(s)}</td><td>${scanCell(s.scan)}</td>
+  </tr>`).join("") : `<tr><td colspan="10" class="empty">沒有符合條件的 skill。</td></tr>`;
+}
+document.querySelectorAll("#skills th button").forEach(b => b.addEventListener("click", () => {
+  const k = b.dataset.k; sortDir = sortK === k ? -sortDir : (k === "name" ? 1 : -1); sortK = k;
+  document.querySelectorAll("#skills th button").forEach(x => x.removeAttribute("aria-sort"));
+  b.setAttribute("aria-sort", sortDir > 0 ? "ascending" : "descending"); renderSkills();
+}));
+["q","ftier","fteam","fstatus"].forEach(id => $("#" + id).addEventListener("input", renderSkills));
+renderSkills();
+
+$("#teams").innerHTML = D.teams.length ? D.teams.map(t => {
+  const r = t.required || {}, rec = t.recommended || {};
+  const share = t.projects ? t.compliant / t.projects : 0;
+  const chips = (arr, cls, pre = "") => (arr || []).map(x => `<span class="chip ${cls}">${pre}${esc(typeof x === "string" ? x : x.id)}</span>`).join("");
+  return `<div class="panel team">
+    <h3><span>${esc(t.name)}</span><span class="pill ${t.projects && t.compliant === t.projects ? "p-ok" : t.projects ? "p-warn" : "p-mute"}">${t.compliant}/${t.projects} 專案達成</span></h3>
+    <p>${esc(t.description)}</p>
+    <div class="bar" aria-hidden="true"><i style="width:${Math.round(share * 100)}%"></i></div>
+    <div class="chips">${chips(r.skills, "req")}${chips(r.plugins, "req", "plugin:")}${chips(r.agent_plugins, "req")}</div>
+    ${(rec.skills || []).length || (rec.plugins || []).length ? `<div class="chips"><span class="meta">建議：</span>${chips(rec.skills, "")}${chips(rec.plugins, "", "plugin:")}</div>` : ""}
+    <p class="meta">負責人 ${esc((t.owners || []).join(", ") || "未設定")} · 近 ${D.days} 天 ${t.uses} 次使用</p>
+  </div>`;
+}).join("") : `<p class="empty panel">hub 還沒有團隊設定。在 <code>teams/&lt;團隊&gt;.json</code> 新增後就會出現在這裡。</p>`;
+if (D.required_plugins && D.required_plugins.length) $("#teams").insertAdjacentHTML("afterbegin",
+  `<div class="panel team"><h3><span>全部專案</span><span class="pill p-mute">hub 預設</span></h3><p>每個專案都會安裝 always-on skill 與下列必裝 plugin。</p>
+   <div class="chips">${D.skills.filter(s => s.tier === "always-on" && s.status === "active").map(s => `<span class="chip req">${esc(s.name)}</span>`).join("")}${D.required_plugins.map(p => `<span class="chip req">${esc(p)}</span>`).join("")}</div></div>`);
+
+$("#projects tbody").innerHTML = D.projects.length ? D.projects.map(p => `<tr>
+  <td class="mono">${esc(p.id)}</td><td>${esc((p.teams || []).join(", ") || "—")}</td><td>${esc((p.agents || []).join(", "))}</td>
+  <td class="num">${Object.keys(p.skills || {}).length}</td>
+  <td>${(p.missing_required || []).length ? `<span class="pill p-bad">${esc(p.missing_required.join(", "))}</span>` : `<span class="pill p-ok">無</span>`}</td>
+  <td class="mono">${esc((p.synced_at || "").slice(0, 10))}</td></tr>`).join("")
+  : `<tr><td colspan="6" class="empty">還沒有專案回報。成員在 hub 執行 <code>skillctl report --pr</code> 後就會出現。</td></tr>`;
+
+$("#bundles tbody").innerHTML = D.bundles.map(b => `<tr><td class="name">${esc(b.name)}</td><td><span class="tier tier-${esc(b.tier)}">${esc(b.tier)}</span></td>
+  <td><div class="chips">${b.skills.map(x => `<span class="chip">${esc(x)}</span>`).join("")}${b.tools.map(x => `<span class="chip req">tool:${esc(x)}</span>`).join("")}${b.extends.map(x => `<span class="chip">+${esc(x)}</span>`).join("")}</div></td>
+  <td class="desc">${esc(b.description)}</td></tr>`).join("");
+$("#ext tbody").innerHTML = (D.external_scans || []).length ? D.external_scans.map(e => `<tr><td class="mono">${esc(e.key)}</td>
+  <td>${scanCell({...e, accepted: !!e.accepted})}</td><td class="mono">${esc(e.scanner || "skillspector")}</td>
+  <td class="desc">${esc(e.accepted || "—")}</td><td class="mono">${esc((e.scanned_at || "").slice(0, 10))}</td></tr>`).join("")
+  : `<tr><td colspan="5" class="empty">還沒有外部工具或 plugin 的掃描紀錄。執行 <code>skillctl scan tool:&lt;id&gt;</code> 後會出現。</td></tr>`;
+</script>
+</body>
+</html>

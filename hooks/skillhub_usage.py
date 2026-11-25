@@ -87,6 +87,7 @@ def log_use(agent, project, data, name, source, error):
         "source": source,
         "session": h(data.get("session_id") or data.get("conversation_id")),
         "project": project.name if os.environ.get("SKILLHUB_PROJECT_NAMES") else h(str(project)),
+        "team": ",".join(lock.get("teams") or []) or None,
         "error": error,
     }
     LOG.parent.mkdir(parents=True, exist_ok=True)

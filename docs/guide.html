@@ -142,6 +142,8 @@ footer{margin-top:64px;padding-top:24px;border-top:1px solid var(--line);font-si
     <li><a href="#superpowers">必裝 plugin</a></li>
     <li><a href="#pstack">選用：pstack</a></li>
     <li><a href="#tools">外部工具</a></li>
+    <li><a href="#teams">團隊必裝</a></li>
+    <li><a href="#dashboard">使用看板</a></li>
     <li><a href="#agents">Codex 與 Cursor</a></li>
     <li><a href="#author">寫新 skill</a></li>
     <li><a href="#adopt-flow">自建 skill 送審</a></li>
@@ -176,10 +178,10 @@ footer{margin-top:64px;padding-top:24px;border-top:1px solid var(--line);font-si
       <tr><td>spec.md 編譯出 SKILL.md</td><td><code>spec.md</code> 寫意圖，<code>skillctl compile</code> 用 Claude 產生 SKILL.md 草稿</td></tr>
       <tr><td>單一 Git repo 當 marketplace</td><td>skill-hub repo，<code>skills/</code> 下分三層</td></tr>
       <tr><td>Domain / Core / Always-on</td><td>同名三個資料夾，CODEOWNERS 控制審查</td></tr>
-      <tr><td>aifx CLI＋六層設定</td><td><code>skillctl</code>＋四層設定（hub → 使用者 → 專案 → 本機）</td></tr>
+      <tr><td>aifx CLI＋六層設定</td><td><code>skillctl</code>＋五層設定（hub → 團隊 → 使用者 → 專案 → 本機）</td></tr>
       <tr><td>find-skills</td><td>always-on skill <code>find-skills</code>，依 eval 分數與用量排序</td></tr>
       <tr><td>Eval 5/80/15＋ablation</td><td><code>evals/cases.jsonl</code>，<code>skillctl eval --ablation</code></td></tr>
-      <tr><td>OpenTelemetry hooks</td><td>hook 寫本機 JSONL，可選擇再送 OTLP</td></tr>
+      <tr><td>OpenTelemetry hooks＋看板</td><td>hook 寫本機 JSONL（可再送 OTLP），<code>skillctl report</code> 匯總，<code>skillctl dashboard</code> 發佈到 GitHub Pages</td></tr>
       <tr><td>Papercut 自動回報</td><td>always-on skill <code>skill-papercut</code>，可轉成 eval 案例</td></tr>
     </tbody>
   </table></div>
@@ -187,7 +189,7 @@ footer{margin-top:64px;padding-top:24px;border-top:1px solid var(--line);font-si
 
 <section id="arch">
   <h2><span class="n">02</span>整體架構</h2>
-  <p>左邊是 hub 裡的三層 skill，右邊是專案決定要裝哪些 skill 的四層設定。<code>sync</code> 把兩者合併，依專案使用的 agent 安裝到對應資料夾（見<a href="#agents">支援 Codex 與 Cursor</a>），並寫一份 lock 檔記錄版本。</p>
+  <p>左邊是 hub 裡的三層 skill，右邊是專案決定要裝哪些 skill 的五層設定。<code>sync</code> 把兩者合併，依專案使用的 agent 安裝到對應資料夾（見<a href="#agents">支援 Codex 與 Cursor</a>），並寫一份 lock 檔記錄版本。</p>
   <div class="arch">
     <div>
       <h4>skill-hub/skills/</h4>
@@ -288,14 +290,15 @@ cd ~/projects/my-app &amp;&amp; skillctl sync      <span class="c"># 只會更�
 
 <section id="config">
   <h2><span class="n">05</span>分層設定</h2>
-  <p>四層 JSON 依序合併，後面的層級覆蓋前面。清單欄位會累加，<code>exclude</code> 最後套用，所以任何一層都能排除不要的 skill。</p>
+  <p>五層 JSON 依序合併，後面的層級覆蓋前面。清單欄位會累加，<code>exclude</code> 最後套用，所以任何一層都能排除不要的 skill，只有 hub 和團隊規定的必裝排除不掉。</p>
   <div class="tbl"><table>
     <thead><tr><th>層級</th><th>檔案</th><th>適合放什麼</th></tr></thead>
     <tbody>
       <tr><td>1 hub</td><td><code>skill-hub/skillhub.json</code></td><td>全部專案的預設，通常不動</td></tr>
-      <tr><td>2 使用者</td><td><code>~/.config/skillhub/config.json</code></td><td>你在每個專案都想要的個人 skill</td></tr>
-      <tr><td>3 專案</td><td><code>.skillhub.json</code>（進版控）</td><td>這個專案需要的組合包和 skill</td></tr>
-      <tr><td>4 本機</td><td><code>.skillhub.local.json</code>（不進版控）</td><td>只在自己電腦試用、或暫時關掉某個 skill</td></tr>
+      <tr><td>2 團隊</td><td><code>skill-hub/teams/&lt;團隊&gt;.json</code></td><td>團隊的必裝與建議（見<a href="#teams">團隊必裝</a>），專案用 <code>"team"</code> 指定</td></tr>
+      <tr><td>3 使用者</td><td><code>~/.config/skillhub/config.json</code></td><td>你在每個專案都想要的個人 skill</td></tr>
+      <tr><td>4 專案</td><td><code>.skillhub.json</code>（進版控）</td><td>這個專案需要的組合包和 skill</td></tr>
+      <tr><td>5 本機</td><td><code>.skillhub.local.json</code>（不進版控）</td><td>只在自己電腦試用、或暫時關掉某個 skill</td></tr>
     </tbody>
   </table></div>
   <div class="tbl"><table>
@@ -366,8 +369,46 @@ cd ~/projects/my-app &amp;&amp; skillctl sync      <span class="c"># 只會更�
   <p>graphify、GitNexus、understand-anything 都是程式碼圖譜工具，同時開會互搶，<code>sync</code> 和 <code>doctor</code> 會在同一類工具超過一個時提醒。這些工具安裝的 skill 會列入保留名，也不會被當成你自建的 skill 送去收編。</p>
 </section>
 
+<section id="teams">
+  <h2><span class="n">06</span>團隊必裝</h2>
+  <p>不同團隊要的東西不一樣。全部專案都要的，放在 hub 的 <code>skillhub.json</code>（必裝 plugin）和 <span class="pill p-always">always-on</span> 資料夾。只有某個團隊要的，寫在 hub 的 <code>teams/&lt;團隊&gt;.json</code>，它是設定的第 2 層，疊在 hub 預設之上：</p>
+  <div class="pre"><pre>{
+  <span class="k">"description"</span>: <span class="s">"前端團隊：查最新框架文件，commit 訊息統一格式。"</span>,
+  <span class="k">"owners"</span>: [<span class="s">"@timmy12335"</span>],
+  <span class="k">"required"</span>:    { <span class="k">"skills"</span>: [<span class="s">"commit-message"</span>], <span class="k">"plugins"</span>: [<span class="s">"library-docs"</span>], <span class="k">"agent_plugins"</span>: [] },
+  <span class="k">"recommended"</span>: { <span class="k">"plugins"</span>: [<span class="s">"docs-visual"</span>] }
+}</pre></div>
+  <p>專案加入團隊：</p>
+  <div class="pre"><pre>skillctl init --team frontend     <span class="c"># 或在 .skillhub.json 寫 "team": "frontend"（可以是清單）</span>
+skillctl teams                    <span class="c"># 看每個團隊必裝什麼</span></pre></div>
+  <div class="tbl"><table>
+    <thead><tr><th></th><th>required</th><th>recommended</th></tr></thead>
+    <tbody>
+      <tr><td><code>sync</code></td><td>一定安裝</td><td>預設安裝</td></tr>
+      <tr><td>專案用 <code>exclude</code> 排除</td><td>不行，會提示這是團隊必裝</td><td>可以</td></tr>
+      <tr><td><code>doctor</code></td><td>沒裝齊就列為 ✗</td><td>不檢查</td></tr>
+      <tr><td>看板</td><td>顯示每個團隊有幾個專案達成</td><td>列為建議</td></tr>
+    </tbody>
+  </table></div>
+  <div class="note"><b>誰能改：</b><code>teams/</code> 在 hub 裡，改動要走 PR，CI 的 lint 會檢查引用的 skill 和組合包存在。在 CODEOWNERS 加 <code>/teams/frontend.json @frontend-lead</code>，就能讓各團隊負責人審自己的檔案。</div>
+</section>
+
+<section id="dashboard">
+  <h2><span class="n">07</span>使用看板</h2>
+  <p>參考 Uber 的做法，hub 有一個所有人都看得到的看板，回答這幾個問題：hub 有哪些 skill、誰負責；各團隊必裝什麼、哪些專案還沒裝齊；每個 skill 最近被用了幾次、在幾個專案、錯誤率多少；eval 成績和安全掃描結果。最上面是「需要處理」清單，把掃描被擋、eval 未達標、沒人用的退場候選、缺團隊必裝的專案、待處理的 papercut 集中列出。</p>
+  <ol class="steps">
+    <li><div><h3>記錄</h3><p>hook 每次使用寫一行到本機的 <code>~/.skillhub/usage.jsonl</code>，現在也帶團隊名稱。不含 prompt，專案只存路徑雜湊。</p></div></li>
+    <li><div><h3>回報</h3><p>成員在 hub 執行 <code>skillctl report --pr</code>，把本機的匿名彙總寫成 <code>telemetry/&lt;代號&gt;.json</code> 開 PR：每天每個 skill 幾次、各專案裝了哪些 skill、缺哪些團隊必裝。只改 <code>telemetry/</code> 的 PR 由 CI 自動合併。可以排進每週的 cron。</p></div></li>
+    <li><div><h3>發佈</h3><p>main 有更新時和每天一次，GitHub Actions 執行 <code>skillctl dashboard</code>，把看板發佈到 GitHub Pages。第一次要到 repo 的 <b>Settings → Pages → Source</b> 選 <b>GitHub Actions</b>。</p></div></li>
+  </ol>
+  <div class="pre"><pre>skillctl report --pr                                <span class="c"># 送出自己的彙總</span>
+skillctl dashboard --local --out site/index.html    <span class="c"># 在本機看，連還沒回報的紀錄一起算</span></pre></div>
+  <div class="note"><b>私有 repo：</b>GitHub Pages 在私有 repo 需要付費方案。沒有的話，用上面的 <code>--local</code> 在本機產生同一個頁面，或把 <code>_site/</code> 部署到內部的靜態網站。</div>
+  <p>eval 成績來自各 skill 的 <code>evals/score.json</code>，<code>skillctl eval</code> 會寫入並進版控，所以 CI 產生的看板也看得到。</p>
+</section>
+
 <section id="agents">
-  <h2><span class="n">06</span>支援 Codex 與 Cursor</h2>
+  <h2><span class="n">08</span>支援 Codex 與 Cursor</h2>
   <p>跟 Uber 的 aifx 一樣，同一份 hub 可以裝給不同的 agent。在 <code>.skillhub.json</code> 設定 <code>"agents"</code>，<code>sync</code> 會把 skill 放到每個 agent 讀得到的位置，並在各自的設定檔註冊 hook。每個 skill 在專案裡只有一份實體檔案，其他位置用 symlink 指過去，不會出現好幾份各自走樣的副本。</p>
   <div class="pre"><pre><span class="c">// .skillhub.json</span>
 { <span class="k">"agents"</span>: [<span class="s">"claude"</span>, <span class="s">"codex"</span>, <span class="s">"cursor"</span>], <span class="k">"plugins"</span>: [<span class="s">"starter"</span>] }</pre></div>
@@ -400,7 +441,7 @@ cd ~/projects/my-app &amp;&amp; skillctl sync      <span class="c"># 只會更�
 </section>
 
 <section id="author">
-  <h2><span class="n">07</span>寫新 skill</h2>
+  <h2><span class="n">09</span>寫新 skill</h2>
   <p>每個 skill 都走同一條生命週期：</p>
   <div class="life">
     <span>撰寫</span><em>→</em><span>測試</span><em>→</em><span>上架</span><em>→</em><span>依使用資料改進</span><em>→</em><span>模型變強後退場</span>
@@ -430,7 +471,7 @@ skillctl eval api-review</pre></div>
 </section>
 
 <section id="adopt-flow">
-  <h2><span class="n">08</span>專案自建 skill 自動送審</h2>
+  <h2><span class="n">10</span>專案自建 skill 自動送審</h2>
   <p>在任何專案的 skill 資料夾（<code>.claude/skills/</code>、<code>.agents/skills/</code>、<code>.cursor/skills/</code>）自己新增 skill 時，不需要手動搬到 hub。agent session 結束時，hook 會發現這個新 skill，自動開 PR 送進 hub 審核，通過後由 hub 接手管理。</p>
   <ol class="steps">
     <li><div>
@@ -465,7 +506,7 @@ skillctl eval api-review</pre></div>
 </section>
 
 <section id="security">
-  <h2><span class="n">09</span>安全掃描</h2>
+  <h2><span class="n">11</span>安全掃描</h2>
   <p>skill 就是會被 agent 執行的指令和腳本，從別的專案收進來、或安裝第三方工具時，都可能夾帶惡意內容。hub 在四個地方掃描：</p>
   <div class="tbl"><table>
     <thead><tr><th>時機</th><th>在哪跑</th><th>結果</th></tr></thead>
@@ -511,7 +552,7 @@ skillctl scan --scanner cisco x    <span class="c"># 這次改用另一個掃描
 </section>
 
 <section id="tiers">
-  <h2><span class="n">10</span>升級與退場</h2>
+  <h2><span class="n">12</span>升級與退場</h2>
   <p>skill 放在哪個資料夾就是哪一級。新 skill 一律從 <span class="pill p-domain">domain</span> 開始，證明自己有用之後再往上升。升級和降級都用指令完成，指令會搬資料夾、改 <code>tier</code>、升版號、寫 CHANGELOG，你只要 commit 並開 PR。</p>
   <div class="pre"><pre>$ skillctl promote api-review --dry-run
 api-review：domain → core
@@ -553,7 +594,7 @@ skillctl demote api-review --to domain         <span class="c"># 降一層</span
 </section>
 
 <section id="eval">
-  <h2><span class="n">11</span>Eval 與 ablation</h2>
+  <h2><span class="n">13</span>Eval 與 ablation</h2>
   <p><code>skillctl eval</code> 會為每個案例建一個乾淨的暫存專案，只裝這個 skill 和 always-on 層，用 <code>claude -p</code> 執行，再檢查 skill 有沒有被觸發、輸出是否符合條件。預設只給 agent 唯讀工具，需要更多用 <code>--allow-tools</code>。</p>
   <h3>案例格式</h3>
   <div class="pre"><pre>{<span class="k">"type"</span>: <span class="s">"golden"</span>, <span class="k">"prompt"</span>: <span class="s">"我 stage 好了，幫我寫 commit message"</span>,
@@ -580,11 +621,11 @@ skillctl demote api-review --to domain         <span class="c"># 降一層</span
 </section>
 
 <section id="telemetry">
-  <h2><span class="n">12</span>使用量與回報</h2>
+  <h2><span class="n">14</span>使用量與回報</h2>
   <h3>Hook 記錄什麼</h3>
   <p><code>init</code> 註冊兩個 hook：agent 呼叫 Skill 工具時（PostToolUse），以及你手動輸入 <code>/skill-name</code> 時（UserPromptSubmit，只取指令名稱）。每筆寫一行到 <code>~/.skillhub/usage.jsonl</code>：</p>
   <div class="pre"><pre>{<span class="k">"ts"</span>: <span class="s">"2026-11-24T14:16:23+00:00"</span>, <span class="k">"skill"</span>: <span class="s">"commit-message"</span>, <span class="k">"version"</span>: <span class="s">"1.1.0"</span>,
- <span class="k">"source"</span>: <span class="s">"agent"</span>, <span class="k">"session"</span>: <span class="s">"ba7816bf8f"</span>, <span class="k">"project"</span>: <span class="s">"c863215129"</span>, <span class="k">"error"</span>: null}</pre></div>
+ <span class="k">"source"</span>: <span class="s">"agent"</span>, <span class="k">"session"</span>: <span class="s">"ba7816bf8f"</span>, <span class="k">"project"</span>: <span class="s">"c863215129"</span>, <span class="k">"team"</span>: <span class="s">"frontend"</span>, <span class="k">"error"</span>: null}</pre></div>
   <p>不記錄 prompt 或檔案內容，session 和專案路徑都只存雜湊值。設定 <code>SKILLHUB_OTLP_ENDPOINT</code> 會另外送一份到 OpenTelemetry collector。hook 出錯時一律靜默，不會擋住 agent。</p>
   <h3>看統計</h3>
   <p style="font-size:13px;color:var(--muted);margin-bottom:0">以下數字為示意。</p>
@@ -603,12 +644,15 @@ skillctl papercut commit-message --to-eval   <span class="c"># 全部轉成 real
 </section>
 
 <section id="cli">
-  <h2><span class="n">13</span>指令速查</h2>
+  <h2><span class="n">15</span>指令速查</h2>
   <div class="tbl"><table>
     <thead><tr><th>指令</th><th>用途</th></tr></thead>
     <tbody>
-      <tr><td><code>init [--plugins …] [--agents …]</code></td><td>在專案啟用框架：設定檔、hook、第一次同步</td></tr>
-      <tr><td><code>sync [--dry-run]</code></td><td>依四層設定安裝、更新、移除 skill，並啟用必裝 plugin</td></tr>
+      <tr><td><code>init [--team …] [--plugins …] [--agents …]</code></td><td>在專案啟用框架：設定檔、hook、第一次同步</td></tr>
+      <tr><td><code>teams</code></td><td>列出各團隊的必裝與建議</td></tr>
+      <tr><td><code>report [--pr]</code></td><td>把本機匿名使用彙總送進 hub 的 telemetry/</td></tr>
+      <tr><td><code>dashboard [--local] [--out]</code></td><td>產生使用看板（CI 每天發佈到 GitHub Pages）</td></tr>
+      <tr><td><code>sync [--dry-run]</code></td><td>依五層設定安裝、更新、移除 skill，並啟用必裝 plugin</td></tr>
       <tr><td><code>adopt [name…] [--no-pr] [--again]</code></td><td>把專案內自建的 skill 送進 hub domain 層並開 PR</td></tr>
       <tr><td><code>tools [--run]</code></td><td>外部工具的狀態與各 agent 的安裝指令</td></tr>
       <tr><td><code>doctor</code></td><td>檢查專案的 skill、hook、必裝 plugin、外部工具掃描結果</td></tr>
@@ -629,7 +673,7 @@ skillctl papercut commit-message --to-eval   <span class="c"># 全部轉成 real
 </section>
 
 <section id="faq">
-  <h2><span class="n">14</span>常見問題</h2>
+  <h2><span class="n">16</span>常見問題</h2>
   <h3>copy 和 link 模式要選哪個？</h3>
   <p>團隊專案用 <code>copy</code>：skill 跟著專案進版控，隊友不需要 hub。自己同時開發 hub 和專案時，在 <code>.skillhub.local.json</code> 設 <code>"mode": "link"</code>，改 hub 立刻生效。</p>
   <h3>專案裡直接改了 skill 資料夾的檔案會怎樣？</h3>

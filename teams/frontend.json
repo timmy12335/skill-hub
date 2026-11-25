@@ -1,0 +1,13 @@
+{
+  "description": "前端團隊：查最新框架文件，commit 訊息統一格式。",
+  "owners": ["@timmy12335"],
+  "required": {
+    "skills": ["commit-message"],
+    "plugins": ["library-docs"],
+    "agent_plugins": []
+  },
+  "recommended": {
+    "skills": [],
+    "plugins": ["docs-visual"]
+  }
+}
