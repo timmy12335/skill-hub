@@ -127,6 +127,7 @@ skillctl install plugin:pstack     # 或 skillctl init --plugins starter pstack
 | 組合包 | 工具 | 層級 | 用途 | 授權 |
 |---|---|---|---|---|
 | `code-graph`（`starter` 已包含） | [graphify](https://github.com/Graphify-Labs/graphify) | core | 本機 tree-sitter 程式碼／文件知識圖譜，query / path / explain | Apache-2.0 |
+| `library-docs` | [Context7](https://github.com/upstash/context7) | core（不在 starter） | 依版本查最新的函式庫、框架、SDK 文件；用 CLI＋skill（`find-docs`），不裝 MCP | MIT |
 | `docs-visual` | [archify](https://github.com/tt-a1i/archify) | domain | 把需求、Mermaid、程式或 PR 畫成互動式 HTML 圖表 | Apache-2.0 |
 | `gitnexus` | [GitNexus](https://github.com/abhigyanpatwari/GitNexus) | domain（選用） | 影響分析、diff 影響、安全改名 | **PolyForm Noncommercial** |
 
@@ -138,7 +139,8 @@ skillctl tools --run    # 直接執行（會跑第三方安裝程式）
 
 - 組合包可以用 `extends` 引用其他組合包，`starter` 透過它帶入 `code-graph`。
 - 工具安裝的 skill（例如 `graphify`、`archify`、`gitnexus-*`）列入保留名，也不會被當成自建 skill 送去 adopt。
-- **同類工具只開一個**：graphify、GitNexus、understand-anything 都是程式碼圖譜，同時開會互搶；`sync` 和 `doctor` 會警告。
+- **同類工具只開一個**：graphify、GitNexus、understand-anything 都是程式碼圖譜，同時開會互搶；Context7 的 CLI 模式（`find-docs`）和 MCP 模式（`context7-mcp`）也一樣。`sync` 和 `doctor` 會警告。
+- **Context7**：雲端服務，查詢內容會送到 context7.com，第一次安裝要登入（或 `--api-key`）。因此是 core 但不預設，需要的專案 `skillctl install plugin:library-docs`。CLI 和 MCP 模式只開一個，`doctor` 會警告。安全掃描只掃實際安裝的 `skills/find-docs`（組合包的 `scan` 欄位），不掃整個 monorepo。
 - **GitNexus**：非商業授權，商業專案不要用。一律用 `gitnexus analyze --index-only`；不加這個參數它會改寫 CLAUDE.md／AGENTS.md、註冊 hook、安裝 skill，和 skill-hub 搶著管專案設定。
 
 ## 安全掃描

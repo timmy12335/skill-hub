@@ -1,0 +1,24 @@
+{
+  "description": "查最新版的函式庫與框架文件：Context7 依版本抓官方文件與範例，避免 agent 用過時的 API。",
+  "tier": "core",
+  "tools": [
+    {
+      "id": "context7",
+      "group": "library-docs",
+      "license": "MIT",
+      "homepage": "https://github.com/upstash/context7",
+      "scan": "https://github.com/upstash/context7/tree/master/skills/find-docs",
+      "check": null,
+      "install": {
+        "claude": "npx -y ctx7@0.13.0 setup --cli --project --claude --yes",
+        "codex": "npx -y ctx7@0.13.0 setup --cli --project --codex --yes",
+        "cursor": "npx -y ctx7@0.13.0 setup --cli --project --cursor --yes"
+      },
+      "skills": [
+        "find-docs"
+      ],
+      "warning": "Context7 是雲端服務：查詢的函式庫名稱和問題會送到 context7.com。第一次安裝會開瀏覽器登入（或加 --api-key，免費帳號即可）。用 CLI + skill 模式，不裝 MCP server，比較省 context。",
+      "usage": "問到任何函式庫、框架、SDK 的用法時，agent 會自動用 find-docs 查（也可直接說「用 context7 查 Next.js 的 middleware」）"
+    }
+  ]
+}

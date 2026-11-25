@@ -356,10 +356,12 @@ cd ~/projects/my-app &amp;&amp; skillctl sync      <span class="c"># 只會更�
     <thead><tr><th>組合包</th><th>工具</th><th>用途</th><th>授權</th></tr></thead>
     <tbody>
       <tr><td><span class="pill p-core">code-graph</span></td><td><a href="https://github.com/Graphify-Labs/graphify" target="_blank" rel="noopener">graphify</a></td><td>理解陌生程式庫的標準工具：本機把程式碼與文件建成知識圖譜，問「A 怎麼連到 B」。<code>starter</code> 已包含</td><td>Apache-2.0</td></tr>
+      <tr><td><span class="pill p-core">library-docs</span></td><td><a href="https://github.com/upstash/context7" target="_blank" rel="noopener">Context7</a></td><td>依版本查最新的函式庫、框架、SDK 文件與範例，避免 agent 用過時的 API。用 CLI＋skill 模式（<code>find-docs</code>），不裝 MCP server</td><td>MIT</td></tr>
       <tr><td><span class="pill p-domain">docs-visual</span></td><td><a href="https://github.com/tt-a1i/archify" target="_blank" rel="noopener">archify</a></td><td>把需求、Mermaid、程式或 PR 畫成互動式 HTML 圖表</td><td>Apache-2.0</td></tr>
       <tr><td><span class="pill p-domain">gitnexus</span></td><td><a href="https://github.com/abhigyanpatwari/GitNexus" target="_blank" rel="noopener">GitNexus</a></td><td>改程式前的影響分析、diff 影響、安全改名</td><td>PolyForm Noncommercial</td></tr>
     </tbody>
   </table></div>
+  <div class="note"><b>Context7：</b>它是雲端服務，查詢的函式庫名稱和問題會送到 context7.com，第一次安裝要登入（免費帳號即可）。所以它屬於 core 但不放進 <code>starter</code>，要用的專案自己 <code>skillctl install plugin:library-docs</code>。CLI 模式和 MCP 模式只開一個，<code>doctor</code> 會檢查。</div>
   <div class="note"><b>GitNexus：</b>不能用在商業專案。一律用 <code>gitnexus analyze --index-only</code>，否則它會改寫 CLAUDE.md、AGENTS.md，註冊 hook 並安裝 skill，跟 skill-hub 搶著管專案設定。</div>
   <p>graphify、GitNexus、understand-anything 都是程式碼圖譜工具，同時開會互搶，<code>sync</code> 和 <code>doctor</code> 會在同一類工具超過一個時提醒。這些工具安裝的 skill 會列入保留名，也不會被當成你自建的 skill 送去收編。</p>
 </section>

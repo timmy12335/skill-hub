@@ -408,8 +408,8 @@ def group_conflicts(cfg: dict, project: Path) -> dict:
     """同一類工具（例如 code-graph）同時開了不只一個。"""
     groups = {}
     for tl in active_tools(cfg):
-        if tl.get("group"):
-            groups.setdefault(tl["group"], set()).add(tl["id"])
+        if tl.get("group"):  # 用工具的主要 skill 名稱比對，才能和已安裝的 skill 對上
+            groups.setdefault(tl["group"], set()).add((tl.get("skills") or [tl["id"]])[0])
     for g, members in read_json(HUB_ROOT / "skillhub.json").get("known_tool_groups", {}).items():
         for m in members:
             if skill_present(project, m):
@@ -451,7 +451,7 @@ def cmd_tools(a):
             print(f"    安全掃描：{res.get('score')}/100 {res.get('recommendation')}{acc}（{res.get('scanned_at', '')[:10]}）")
         if ok and not a.run:
             continue
-        if a.run and not ok and not scan_gate(f"tool:{tl['id']}", tl["homepage"], recursive=True):
+        if a.run and not ok and not scan_gate(f"tool:{tl['id']}", tl.get("scan", tl["homepage"]), recursive=True):
             print(f"    ✗ 安全掃描未通過，不安裝。確認誤判後：skillctl scan --accept tool:{tl['id']} --reason …")
             continue
         for kind, c in tool_commands(tl, agents):
@@ -1477,7 +1477,7 @@ def scan_target(spec: str) -> list:
         if not b:
             die(f"找不到組合包：{spec[7:]}")
         out = [(f"skill:{n}", str(all_skills()[n]["path"]), False) for n in b.get("skills", []) if n in all_skills()]
-        out += [(f"tool:{tl['id']}", tl["homepage"], True) for tl in b.get("tools", []) if tl.get("homepage")]
+        out += [(f"tool:{tl['id']}", tl.get("scan", tl["homepage"]), True) for tl in b.get("tools", []) if tl.get("homepage")]
         for ap in b.get("agent_plugins", []):
             if isinstance(ap, dict) and ap.get("homepage"):
                 out.append((f"plugin:{ap['id']}", ap["homepage"], True))
@@ -1486,7 +1486,7 @@ def scan_target(spec: str) -> list:
         for b in all_bundles().values():
             for tl in b.get("tools", []):
                 if tl["id"] == spec[5:]:
-                    return [(spec, tl["homepage"], True)]
+                    return [(spec, tl.get("scan", tl["homepage"]), True)]  # scan：只掃實際會裝的部分
         die(f"找不到工具：{spec[5:]}")
     if spec.startswith("plugin:"):
         pid = spec[7:]
