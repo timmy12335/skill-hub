@@ -1,0 +1,22 @@
+{
+  "description": "文件與說明的視覺化：archify 把需求、Mermaid、程式或 PR 畫成互動式 HTML 圖表。",
+  "tier": "domain",
+  "tools": [
+    {
+      "id": "archify",
+      "license": "Apache-2.0",
+      "homepage": "https://github.com/tt-a1i/archify",
+      "check": null,
+      "install": {
+        "claude": "npx -y skills@latest add https://archify.si --skill archify --agent claude-code --yes && npx -y skills@latest add tt-a1i/archify --skill archify-pr --agent claude-code --yes",
+        "codex": "npx -y skills@latest add https://archify.si --skill archify --agent codex --yes && npx -y skills@latest add tt-a1i/archify --skill archify-pr --agent codex --yes",
+        "cursor": "npx -y skills@latest add https://archify.si --skill archify --agent cursor --yes && npx -y skills@latest add tt-a1i/archify --skill archify-pr --agent cursor --yes"
+      },
+      "skills": [
+        "archify",
+        "archify-pr"
+      ],
+      "usage": "請 agent「用 archify 畫架構圖／流程圖」；archify-pr 會在大型 diff 時提議畫變更說明"
+    }
+  ]
+}

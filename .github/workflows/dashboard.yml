@@ -1,0 +1,39 @@
+name: dashboard
+# 把看板發佈到 GitHub Pages：main 有更新（skill、團隊、telemetry、掃描結果）或每天一次
+# 第一次使用：repo Settings → Pages → Source 選「GitHub Actions」
+on:
+  push:
+    branches: [main]
+    paths: ["skills/**", "teams/**", "plugins/**", "telemetry/**", "security/**", "skillhub.json", "tools/**"]
+  schedule:
+    - cron: "17 0 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+concurrency:
+  group: pages
+  cancel-in-progress: true
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with: { python-version: "3.12" }
+      - run: python3 tools/skillctl.py dashboard --out _site/index.html --days 30
+      - uses: actions/upload-pages-artifact@v3
+        with: { path: _site }
+  deploy:
+    needs: build
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.d.outputs.page_url }}
+    steps:
+      - id: d
+        uses: actions/deploy-pages@v4

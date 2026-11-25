@@ -1,0 +1,9 @@
+{
+  "description": "新專案的入門組合：commit 訊息規範＋理解程式庫的 graphify",
+  "skills": [
+    "commit-message"
+  ],
+  "extends": [
+    "code-graph"
+  ]
+}

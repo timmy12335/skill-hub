@@ -1,0 +1,38 @@
+{
+  "description": "程式碼影響分析（改這裡會影響什麼、diff 影響、安全改名）。僅限個人或非商業專案。",
+  "tier": "domain",
+  "tools": [
+    {
+      "id": "gitnexus",
+      "group": "code-graph",
+      "license": "PolyForm-Noncommercial-1.0.0",
+      "noncommercial": true,
+      "homepage": "https://github.com/abhigyanpatwari/GitNexus",
+      "check": "gitnexus",
+      "install": {
+        "cli": "npm install -g gitnexus",
+        "project": "gitnexus analyze --index-only",
+        "claude": "gitnexus setup -c claude",
+        "codex": "gitnexus setup -c codex",
+        "cursor": "gitnexus setup -c cursor"
+      },
+      "skills": [
+        "gitnexus",
+        "gitnexus-cli",
+        "gitnexus-debugging",
+        "gitnexus-exploring",
+        "gitnexus-guide",
+        "gitnexus-impact-analysis",
+        "gitnexus-lfg",
+        "gitnexus-pdg-query",
+        "gitnexus-plan",
+        "gitnexus-refactoring",
+        "gitnexus-review",
+        "gitnexus-taint-analysis",
+        "gitnexus-work"
+      ],
+      "warning": "授權為 PolyForm Noncommercial，不能用在商業專案。請用 gitnexus analyze --index-only；不加這個參數時它會改寫 CLAUDE.md／AGENTS.md、註冊 hook、安裝 skill，和 skill-hub 搶著管專案設定。",
+      "usage": "透過 MCP 工具 impact / detect_changes / rename / trace"
+    }
+  ]
+}

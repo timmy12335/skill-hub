@@ -1,0 +1,62 @@
+{
+  "always_on": true,
+  "plugins": [],
+  "include": [],
+  "exclude": [],
+  "mode": "copy",
+  "agent_plugins": [
+    {
+      "id": "superpowers@superpowers-marketplace",
+      "required": true,
+      "homepage": "https://github.com/obra/superpowers",
+      "marketplace": {
+        "name": "superpowers-marketplace",
+        "repo": "obra/superpowers-marketplace"
+      },
+      "provides": [
+        "using-superpowers",
+        "brainstorming",
+        "writing-plans",
+        "executing-plans",
+        "subagent-driven-development",
+        "dispatching-parallel-agents",
+        "test-driven-development",
+        "systematic-debugging",
+        "verification-before-completion",
+        "requesting-code-review",
+        "receiving-code-review",
+        "using-git-worktrees",
+        "finishing-a-development-branch",
+        "writing-skills",
+        "diagnosing-superpowers"
+      ]
+    }
+  ],
+  "known_tool_groups": {
+    "code-graph": [
+      "graphify",
+      "gitnexus",
+      "understand-anything"
+    ],
+    "library-docs": [
+      "find-docs",
+      "context7-mcp",
+      "context7-cli"
+    ]
+  },
+  "security": {
+    "scanner": "skillspector",
+    "install": "uv tool install --python 3.13 git+https://github.com/NVIDIA/skillspector.git",
+    "max_score": 50,
+    "block": [
+      "DO_NOT_INSTALL"
+    ],
+    "llm": false,
+    "baseline": ".skillspector-baseline.yaml",
+    "cisco": {
+      "install": "uv tool install cisco-ai-skill-scanner",
+      "policy": "low-noise",
+      "fail_on_severity": "high"
+    }
+  }
+}

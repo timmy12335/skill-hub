@@ -1,0 +1,3 @@
+{"type": "golden", "prompt": "有沒有可以幫我寫 commit message 的 skill？", "expect": {"triggers": true, "contains": ["commit-message"]}}
+{"type": "real", "prompt": "is there a skill for writing changelogs?", "expect": {"triggers": true}}
+{"type": "real", "prompt": "幫我把這段 Python 的變數改名成 snake_case", "expect": {"triggers": false}}

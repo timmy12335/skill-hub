@@ -1,0 +1,7 @@
+# domain：任何人都能新增，1 人 review 即可（在 branch protection 設定 required reviews = 1）
+/skills/domain/      @timmy12335
+# core 與 always-on：影響所有專案，必須由平台負責人審查
+/skills/core/        @timmy12335
+/skills/always-on/   @timmy12335
+/tools/              @timmy12335
+/hooks/              @timmy12335
